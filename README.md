@@ -74,7 +74,25 @@ Three findings worth calling out:
    even on rare-species turns. The species categorical features already subsume stats and
    typing for anything seen in training — domain knowledge only pays when the model
    couldn't have learned it from data volume alone ([src/pokedex.py](src/pokedex.py) is
-   kept, tested, for the Phase 5 team-inference goal).
+   kept, tested, for future type-reasoning features).
+
+### Team inference (Phase 5)
+
+The second model answers the hidden-information question: **given k known members of a
+team, which species are the other 6−k?** A smoothed co-occurrence naive Bayes, fit on
+29,188 training rosters and evaluated on 9,207 strictly-newer test teams (~540 candidate
+species per guess):
+
+| Members revealed | Top-1 hit rate | Recall@10 | Usage-baseline top-1 |
+|---|---|---|---|
+| 1 | 32.8% | 35.3% | 26.7% |
+| 2 | 34.7% | 43.6% | 23.2% |
+| 3 | 35.4% | 49.6% | 18.5% |
+| 4 | 33.0% | 53.9% | 13.4% |
+
+Note the crossing dynamics: the usage-only baseline *degrades* as more is revealed
+(the popular picks get used up), while the model *improves* — evidence it reads team
+archetypes, not just popularity.
 
 ## Demo app
 
@@ -86,6 +104,9 @@ Three findings worth calling out:
 - the model's verdict: final read on the actual winner and the turn from which it
   called the game without flipping again
 
+Plus a **Team Predictor** tab: pick 1–5 known members of any team and get the most
+likely hidden teammates, ranked with relative likelihoods.
+
 ## Roadmap
 
 - [x] **Phase 0 — feasibility**: verify replay API pagination, log format, usage stats availability
@@ -95,8 +116,8 @@ Three findings worth calling out:
       Brier, AUC, reliability diagrams; feature importance
 - [x] **Phase 4 — Streamlit app**: paste a replay URL → win-probability timeline with
       key-moment detection, model verdict metrics, and revealed teams
-- [ ] **Phase 5 (stretch) — team inference**: predict unrevealed team members from revealed
-      ones using usage-stats co-occurrence (feeds back into Phase 3 as features)
+- [x] **Phase 5 — team inference**: predict unrevealed team members from revealed ones
+      via co-occurrence naive Bayes over training rosters; Team Predictor tab in the app
 
 ## Known modeling caveats
 
@@ -129,7 +150,10 @@ streamlit run app.py            # interactive demo
 │   ├── build_dataset.py # raw replays -> turns.parquet
 │   ├── features.py      # joins, differentials, encoding, time-based split
 │   ├── train.py         # baselines + LightGBM, calibration evaluation
-│   └── predict.py       # saved model -> per-turn win probs + key moments
+│   ├── predict.py       # saved model -> per-turn win probs + key moments
+│   ├── teammates.py     # teammate co-occurrence inference (Phase 5)
+│   └── pokedex.py       # base stats + type chart (tested; see finding 4)
+├── assets/              # distilled pokedex lookup (committed, used at runtime)
 ├── notebooks/           # EDA, modeling, evaluation
 ├── tests/               # parser unit tests + real replay fixtures
 ├── reports/figures/     # evaluation figures (committed)

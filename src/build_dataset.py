@@ -1,8 +1,10 @@
 """Parse all raw replays into a turn-level modeling dataset.
 
-Output: data/processed/turns.parquet — one row per turn-start snapshot with the
-final game outcome as the label (label_p1_win), plus a games.parquet with one
-row of metadata per replay for game-level joins and time-based splits.
+Output in data/processed/:
+  turns.parquet — one row per turn-start snapshot, labeled with the game outcome
+  games.parquet — one row of metadata per replay (joins, time-based splits)
+  teams.parquet — one row per (replay, side, species): full team rosters,
+                  the training data for teammate inference (Phase 5)
 
 Usage:
     python -m src.build_dataset
@@ -23,7 +25,7 @@ def build() -> None:
     out_dir = cfg["paths"]["processed"]
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    turn_rows, game_rows, failures = [], [], []
+    turn_rows, game_rows, team_rows, failures = [], [], [], []
     files = sorted(raw_dir.glob("*.json"))
     for path in tqdm(files, desc="parsing", unit="replay"):
         try:
@@ -35,9 +37,15 @@ def build() -> None:
         if game["winner"] is None or game["n_turns"] == 0:
             continue  # ties, forfeits before turn 1, or unfinished logs
         snapshots = game.pop("snapshots")
-        game.pop("teams")
+        teams = game.pop("teams")
         game["uploadtime"] = replay.get("uploadtime")
         game_rows.append(game)
+        for side, roster in teams.items():
+            for species in roster:
+                team_rows.append(
+                    {"replay_id": game["id"], "side": side, "species": species,
+                     "uploadtime": game["uploadtime"]}
+                )
         for snap in snapshots:
             turn_rows.append(
                 {
@@ -49,8 +57,10 @@ def build() -> None:
 
     games = pd.DataFrame(game_rows)
     turns = pd.DataFrame(turn_rows)
+    teams = pd.DataFrame(team_rows)
     games.to_parquet(out_dir / "games.parquet", index=False)
     turns.to_parquet(out_dir / "turns.parquet", index=False)
+    teams.to_parquet(out_dir / "teams.parquet", index=False)
 
     print(f"\nParsed {len(games)} games -> {len(turns)} turn rows "
           f"({len(failures)} failures, {len(files) - len(games) - len(failures)} skipped)")
