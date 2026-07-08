@@ -1,0 +1,18 @@
+# ---- data collection -------------------------------------------------------
+format: gen9ou          # Showdown format id (gen9ou, gen9randombattle, ...)
+min_rating: 1100        # skip low-ladder games; search entries expose the game rating
+pages_per_run: 2        # 51 replays/page; raise for full collection runs (40 ≈ 2k games)
+request_delay_s: 1.0    # polite rate limit for replay.pokemonshowdown.com
+
+# ---- modeling ----------------------------------------------------------------
+test_split_date: "2026-07-01"   # games uploaded on/after this date form the test set
+
+# ---- smogon usage stats (Phase 3/5 features) --------------------------------
+stats_month: "2026-06"
+stats_baseline: 1695    # rating cutoff of the stats file: 0 / 1500 / 1695 / 1825
+
+# ---- paths (relative to repo root) ------------------------------------------
+paths:
+  raw_replays: data/raw/replays
+  raw_stats: data/raw/stats
+  processed: data/processed

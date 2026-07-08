@@ -1,0 +1,11 @@
+# Runtime dependencies — also what Streamlit Community Cloud installs to deploy.
+requests>=2.31
+pandas>=2.1
+pyarrow>=15.0        # parquet engine for the processed turn dataset
+PyYAML>=6.0          # config.yaml
+tqdm>=4.66           # progress bars for scrape/parse runs
+scikit-learn>=1.4    # baselines + calibration (Phase 3)
+lightgbm>=4.3        # gradient-boosted win-prob model (Phase 3)
+matplotlib>=3.8      # evaluation plots (reliability diagrams)
+plotly>=5.20         # interactive win-prob timeline in the app
+streamlit>=1.49      # demo app (Phase 4)
