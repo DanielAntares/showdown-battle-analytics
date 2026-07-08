@@ -1,11 +1,13 @@
 # ---- data collection -------------------------------------------------------
 format: gen9ou          # Showdown format id (gen9ou, gen9randombattle, ...)
-min_rating: 1100        # skip low-ladder games; search entries expose the game rating
+min_rating: 1300        # scrape floor; raised from 1100 (2026-07) for dataset v2
 pages_per_run: 2        # 51 replays/page; raise for full collection runs (40 ≈ 2k games)
 request_delay_s: 1.0    # polite rate limit for replay.pokemonshowdown.com
 
 # ---- modeling ----------------------------------------------------------------
 test_split_date: "2026-07-01"   # games uploaded on/after this date form the test set
+train_min_rating: 1300          # older low-elo games stay on disk (skill-band analysis)
+                                # but are excluded from model training
 
 # ---- smogon usage stats (Phase 3/5 features) --------------------------------
 stats_month: "2026-06"

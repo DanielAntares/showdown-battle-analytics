@@ -83,6 +83,9 @@ def load_rosters() -> tuple[list[list[str]], list[list[str]]]:
     """(train, test) rosters, split by the same date cutoff as the win-prob model."""
     cfg = load_config()
     teams = pd.read_parquet(cfg["paths"]["processed"] / "teams.parquet")
+    games = pd.read_parquet(cfg["paths"]["processed"] / "games.parquet")
+    keep = set(games.id[games.rating >= cfg.get("train_min_rating", 0)])
+    teams = teams[teams.replay_id.isin(keep)]
     cutoff = pd.Timestamp(cfg["test_split_date"]).timestamp()
     rosters = teams.groupby(["replay_id", "side"]).agg(
         roster=("species", list), uploadtime=("uploadtime", "first"))

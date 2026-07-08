@@ -118,6 +118,19 @@ likely hidden teammates, ranked with relative likelihoods.
       key-moment detection, model verdict metrics, and revealed teams
 - [x] **Phase 5 — team inference**: predict unrevealed team members from revealed ones
       via co-occurrence naive Bayes over training rosters; Team Predictor tab in the app
+- [x] **Phase 6 — turn stories**: per-turn action tracking (moves, switches, faints, Tera)
+      with luck events (crits, misses) separated, swing-severity grading in key moments
+- [ ] **Phase 7 — dataset v2**: 25–30k games at a 1300+ rating floor (train filter
+      `train_min_rating` keeps older low-Elo games on disk for skill-band analysis)
+- [ ] **Phase 8 — live spectator mode**: attach to an ongoing public battle over
+      Showdown's WebSocket and stream the win-prob chart in real time — the live protocol
+      is identical to replay logs, and the parser is already incremental (`feed()` per line)
+- [ ] **Phase 9 — move advisor**: v1 ranks switch options by re-scoring the win-prob
+      model on hypothetical states + type heuristics for moves; v2 wires Showdown's
+      open-source sim as a local engine for true 1-ply search over the joint action
+      matrix (the Future Sight AI architecture: evaluator + set inference + search)
+- [ ] **Phase 10 — skill-band explorer**: pick example replays by Elo band; compare
+      blunder rates and win-prob volatility across ratings (low vs mid vs high ladder)
 
 ## Known modeling caveats
 

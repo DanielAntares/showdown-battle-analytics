@@ -91,6 +91,12 @@ class BattleParser:
         self.turn = 0
         self.winner: str | None = None
         self.snapshots: list[dict] = []
+        self.events: dict[int, list] = {}  # turn -> what both players did
+
+    def _event(self, side: str, text: str, luck: bool = False) -> None:
+        if self.turn >= 1:  # ignore pre-battle lead switches
+            self.events.setdefault(self.turn, []).append(
+                {"side": side, "text": text, "luck": luck})
 
     # ---- roster helpers ------------------------------------------------------
 
@@ -157,6 +163,16 @@ class BattleParser:
             self.sides[p[2]].team.setdefault(species, Pokemon(species))
         elif cmd in ("switch", "drag"):
             self._handle_switch(p[2], p[3], p[4])
+            side_id = _side_of(p[2])
+            species = self.sides[side_id].active
+            if cmd == "drag":
+                self._event(side_id, f"{species} was dragged in")
+            else:
+                after_faint = any(
+                    e["side"] == side_id and e["text"].endswith("fainted")
+                    for e in self.events.get(self.turn, []))
+                verb = "sent out" if after_faint else "switched to"
+                self._event(side_id, f"{verb} {species}")
         elif cmd == "replace":
             self._handle_replace(p[2], p[3])
         elif cmd == "detailschange":  # mega/forme change keeps the same team entry
@@ -165,6 +181,7 @@ class BattleParser:
             if mon := self._mon(p[2]):
                 mon.revealed = True
                 mon.moves.add(p[3])
+                self._event(_side_of(p[2]), f"{mon.species} used {p[3]}")
         elif cmd in ("-damage", "-heal", "-sethp"):
             if mon := self._mon(p[2]):
                 mon.hp, status = _parse_hp(p[3])
@@ -175,6 +192,13 @@ class BattleParser:
         elif cmd == "faint":
             if mon := self._mon(p[2]):
                 mon.hp, mon.fainted, mon.status = 0.0, True, ""
+                self._event(_side_of(p[2]), f"{mon.species} fainted")
+        elif cmd == "-crit":
+            if mon := self._mon(p[2]):
+                self._event(_side_of(p[2]), f"{mon.species} took a critical hit", luck=True)
+        elif cmd == "-miss":
+            if mon := self._mon(p[2]):
+                self._event(_side_of(p[2]), f"{mon.species}'s attack missed", luck=True)
         elif cmd == "-status":
             if mon := self._mon(p[2]):
                 mon.status = p[3]
@@ -214,6 +238,7 @@ class BattleParser:
         elif cmd == "-terastallize":
             if mon := self._mon(p[2]):
                 mon.tera = p[3]
+                self._event(_side_of(p[2]), f"{mon.species} Terastallized ({p[3]})")
         elif cmd == "turn":
             self.turn = int(p[2])
             self.snapshots.append(self.snapshot())
@@ -271,4 +296,5 @@ def parse_replay(replay: dict) -> dict:
         "n_turns": parser.turn,
         "teams": {sid: sorted(s.team) for sid, s in parser.sides.items()},
         "snapshots": parser.snapshots,
+        "events": parser.events,
     }

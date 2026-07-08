@@ -11,7 +11,8 @@ import requests
 import streamlit as st
 
 from src.parser import parse_replay
-from src.predict import fetch_replay, key_moments, load_model, predict_game
+from src.predict import (actions_by_turn, fetch_replay, key_moments, load_model,
+                         predict_game)
 from src.teammates import TeammateModel
 
 # chart chrome + series colors from the validated reference palette (dataviz skill)
@@ -43,7 +44,10 @@ def analyze(replay_ref: str):
 
 def winprob_figure(game: dict, probs) -> go.Figure:
     snaps = game["snapshots"]
-    hover = [f"{s['p1_active_species']} vs {s['p2_active_species']}" for s in snaps]
+    actions = actions_by_turn(game)
+    hover = [f"{s['p1_active_species']} vs {s['p2_active_species']}"
+             + (f"<br>{actions[s['turn']]}" if actions.get(s["turn"]) else "")
+             for s in snaps]
     moments = key_moments(game, probs)
 
     fig = go.Figure()
@@ -124,10 +128,24 @@ def render_replay_analyzer() -> None:
                   help="First turn from which the model backed the winner without flipping again")
 
     st.subheader("Key moments")
+    names = {"p1": p1, "p2": p2}
     for m in key_moments(game, probs):
-        towards = p1 if m["delta"] > 0 else p2
-        st.markdown(f"**Turn {m['turn']}** · `{m['delta']:+.0%}` toward **{towards}** — "
-                    f"{'; '.join(m['events'])}")
+        towards = names["p1" if m["delta"] > 0 else "p2"]
+        if m["luck"]:
+            tag = f"🎲 luck involved: {'; '.join(m['luck'])}"
+        elif m["severity"] == "major":
+            tag = f"⚠️ major swing against {names[m['against']]} — possible blunder"
+        elif m["severity"] == "big":
+            tag = f"big swing against {names[m['against']]} — possible mistake"
+        else:
+            tag = ""
+        lines = [f"**Turn {m['turn']}** · `{m['delta']:+.0%}` toward **{towards}**"
+                 + (f" — {tag}" if tag else "")]
+        for side in ("p1", "p2"):
+            if m["story"][side]:
+                lines.append(f"&nbsp;&nbsp;&nbsp;{names[side]}: "
+                             f"{'; '.join(m['story'][side])}")
+        st.markdown("  \n".join(lines))
 
     with st.expander("Teams (as revealed in this replay)"):
         t1, t2 = st.columns(2)

@@ -27,11 +27,16 @@ NOT_FEATURES = ["replay_id", "label_p1_win", "uploadtime"]
 
 
 def load_raw() -> pd.DataFrame:
-    """Turn snapshots joined with per-game ratings; no derived features yet."""
+    """Turn snapshots joined with per-game ratings; no derived features yet.
+
+    Games below `train_min_rating` are excluded here (from both train and test)
+    while staying on disk for skill-band analyses.
+    """
     cfg = load_config()
     processed = cfg["paths"]["processed"]
     turns = pd.read_parquet(processed / "turns.parquet")
     games = pd.read_parquet(processed / "games.parquet")
+    games = games[games.rating >= cfg.get("train_min_rating", 0)]
     df = turns.merge(
         games[["id", "p1_rating", "p2_rating", "uploadtime"]],
         left_on="replay_id",

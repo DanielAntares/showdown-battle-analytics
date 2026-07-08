@@ -61,38 +61,44 @@ def predict_game(game: dict, booster: lgb.Booster, meta: dict) -> pd.Series:
     return pd.Series(probs, index=[s["turn"] for s in game["snapshots"]], name="p1_win_prob")
 
 
-def describe_turn(prev: dict, curr: dict, game: dict) -> list[str]:
-    """Human-readable events that happened during the turn between two snapshots."""
-    names = {"p1": game["p1_name"], "p2": game["p2_name"]}
-    events = []
-    for side in ("p1", "p2"):
-        n = names[side]
-        if curr[f"{side}_fainted"] > prev[f"{side}_fainted"]:
-            lost = curr[f"{side}_fainted"] - prev[f"{side}_fainted"]
-            events.append(f"{n} lost {'a Pokémon' if lost == 1 else f'{lost} Pokémon'}")
-        elif curr[f"{side}_active_species"] != prev[f"{side}_active_species"]:
-            events.append(f"{n} switched to {curr[f'{side}_active_species']}")
-        if curr[f"{side}_tera_used"] and not prev[f"{side}_tera_used"]:
-            events.append(f"{n} Terastallized")
-        for hazard, label in [("stealthrock", "Stealth Rock"), ("spikes", "Spikes"),
-                              ("toxicspikes", "Toxic Spikes"), ("stickyweb", "Sticky Web")]:
-            if curr[f"{side}_hazard_{hazard}"] > prev[f"{side}_hazard_{hazard}"]:
-                events.append(f"{label} set against {n}")
-    if not events:
-        events.append("a big damage swing")
-    return events
+def turn_story(game: dict, turn: int) -> dict:
+    """What each player did during a turn, with luck events separated out."""
+    story = {"p1": [], "p2": [], "luck": []}
+    for e in game.get("events", {}).get(turn, []):
+        story["luck" if e["luck"] else e["side"]].append(e["text"])
+    return story
 
 
-def key_moments(game: dict, probs: pd.Series, top: int = 4) -> list[dict]:
-    """The turns with the largest win-probability swings, with what happened."""
+def actions_by_turn(game: dict, max_len: int = 90) -> dict:
+    """One compact 'what happened' line per turn, for chart hover text."""
+    out = {}
+    for turn in range(1, game["n_turns"] + 1):
+        s = turn_story(game, turn)
+        line = " · ".join(s["p1"] + s["p2"])
+        out[turn] = line[: max_len - 1] + "…" if len(line) > max_len else line
+    return out
+
+
+def key_moments(game: dict, probs: pd.Series, top: int = 5) -> list[dict]:
+    """The turns with the largest win-probability swings, with the full story.
+
+    `severity` grades the swing size (major/big/swing); `luck` lists crits and
+    misses that turn — a big swing with luck attached is variance, not a blunder.
+    """
     snaps = game["snapshots"]
     swings = []
     for i in range(len(snaps) - 1):
         delta = probs.iloc[i + 1] - probs.iloc[i]
+        turn = snaps[i]["turn"]
+        story = turn_story(game, turn)
         swings.append({
-            "turn": snaps[i]["turn"],
+            "turn": turn,
             "delta": delta,
-            "events": describe_turn(snaps[i], snaps[i + 1], game),
+            "severity": "major" if abs(delta) >= 0.25 else
+                        "big" if abs(delta) >= 0.15 else "swing",
+            "against": "p2" if delta > 0 else "p1",  # whose stock fell
+            "story": story,
+            "luck": story["luck"],
         })
     swings.sort(key=lambda s: abs(s["delta"]), reverse=True)
     return sorted(swings[:top], key=lambda s: s["turn"])
@@ -105,4 +111,5 @@ if __name__ == "__main__":
     print(f"{game['p1_name']} vs {game['p2_name']} — winner: {game[game['winner'] + '_name']}")
     print(f"P(p1 win): turn 1 {probs.iloc[0]:.0%} -> final {probs.iloc[-1]:.0%}")
     for m in key_moments(game, probs):
-        print(f"  turn {m['turn']:>3} {m['delta']:+.0%}  {'; '.join(m['events'])}")
+        acts = "; ".join(m["story"]["p1"] + m["story"]["p2"] + m["luck"])
+        print(f"  turn {m['turn']:>3} {m['delta']:+.0%} ({m['severity']})  {acts}")

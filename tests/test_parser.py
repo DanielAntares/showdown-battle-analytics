@@ -59,6 +59,17 @@ def test_turns_are_sequential(game):
     assert [s["turn"] for s in game["snapshots"]] == list(range(1, game["n_turns"] + 1))
 
 
+def test_turn_events(game):
+    """Every game records per-turn actions with valid turns and sides."""
+    events = game["events"]
+    assert events, "no per-turn events recorded"
+    assert all(1 <= t <= game["n_turns"] for t in events)
+    flat = [e for evs in events.values() for e in evs]
+    assert all(e["side"] in ("p1", "p2") for e in flat)
+    assert any("used" in e["text"] for e in flat), "no move events"
+    assert any("fainted" in e["text"] for e in flat), "no faint events"
+
+
 def test_condition_normalization():
     """Conditions appear both bare and with a 'move:' prefix in the protocol."""
     assert _norm_condition("move: Stealth Rock") == "stealthrock"
