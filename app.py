@@ -10,10 +10,11 @@ import plotly.graph_objects as go
 import requests
 import streamlit as st
 
+from src.advisor import advise
 from src.live import LiveBattle, find_user_battle, list_battles
 from src.parser import parse_replay
 from src.predict import (actions_by_turn, fetch_replay, key_moments, load_model,
-                         predict_game)
+                         predict_game, snapshot_features)
 from src.teammates import TeammateModel
 
 # chart chrome + series colors from the validated reference palette (dataviz skill)
@@ -36,11 +37,45 @@ def cached_teammates() -> TeammateModel:
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
+def fetch_raw(replay_ref: str) -> dict:
+    return fetch_replay(replay_ref)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
 def analyze(replay_ref: str):
-    game = parse_replay(fetch_replay(replay_ref))
+    game = parse_replay(fetch_raw(replay_ref))
     booster, meta = cached_model()
     probs = predict_game(game, booster, meta)
     return game, probs
+
+
+def render_advisor(game: dict, names: dict, key_prefix: str) -> None:
+    """Ranked switches (model-scored) and revealed moves (damage heuristic)."""
+    side_name = st.radio("Options for", [names["p1"], names["p2"]],
+                         horizontal=True, key=f"{key_prefix}_side")
+    side = "p1" if side_name == names["p1"] else "p2"
+    booster, meta = cached_model()
+    out = advise(game, side, booster, meta, snapshot_features)
+
+    active = next((m["species"] for m in game["roster"][side] if m["active"]), "?")
+    c1, c2 = st.columns(2)
+    c1.markdown(f"**Switch options** — scored by the win-prob model")
+    if len(out["switches"]):
+        sw = out["switches"].assign(
+            win_prob=lambda d: d.win_prob.map("{:.0%}".format),
+            hazard_chip=lambda d: d.hazard_chip.map("{:.0%}".format))
+        c1.dataframe(sw, hide_index=True, width="stretch")
+    else:
+        c1.caption("no healthy bench Pokémon to switch to")
+    c2.markdown(f"**{active}'s revealed moves** — damage heuristic")
+    if len(out["moves"]):
+        c2.dataframe(out["moves"], hide_index=True, width="stretch")
+    else:
+        c2.caption("no moves revealed yet for the active Pokémon")
+    st.caption("⚠️ v1 heuristic: uses only information revealed in this battle; doesn't "
+               "model the opponent's simultaneous choice, hidden items, or abilities. "
+               "Switch scores come from the win-probability model on the post-switch "
+               "state; move scores are power × STAB × type chart × stat ratio.")
 
 
 def winprob_figure(game: dict, probs) -> go.Figure:
@@ -153,6 +188,12 @@ def render_replay_analyzer() -> None:
         t1.markdown(f"**{p1}**\n\n" + "\n".join(f"- {s}" for s in game["teams"]["p1"]))
         t2.markdown(f"**{p2}**\n\n" + "\n".join(f"- {s}" for s in game["teams"]["p2"]))
 
+    with st.expander("🧠 Advisor — what were the options at a given turn?"):
+        turn = st.number_input("At the start of turn", min_value=1,
+                               max_value=game["n_turns"], value=game["n_turns"])
+        state = parse_replay(fetch_raw(ref), up_to_turn=int(turn))
+        render_advisor(state, {"p1": p1, "p2": p2}, key_prefix="replay_adv")
+
     st.caption("Probabilities are the model's read at the *start* of each turn. "
                "Data: public replays from replay.pokemonshowdown.com.")
 
@@ -224,6 +265,8 @@ def live_panel() -> None:
     st.plotly_chart(winprob_figure(game, probs), width="stretch")
     if live.status == "ended" and game["winner"]:
         st.success(f"Battle over — {game[game['winner'] + '_name']} won.")
+    with st.expander("🧠 Advisor — options right now"):
+        render_advisor(game, {"p1": p1, "p2": p2}, key_prefix="live_adv")
 
 
 def render_live_spectator() -> None:

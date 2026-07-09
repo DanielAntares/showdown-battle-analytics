@@ -18,7 +18,9 @@ import requests
 from src.common import ROOT
 
 POKEDEX_URL = "https://play.pokemonshowdown.com/data/pokedex.json"
+MOVES_URL = "https://play.pokemonshowdown.com/data/moves.json"
 ASSET = ROOT / "assets" / "pokedex_min.json"
+MOVES_ASSET = ROOT / "assets" / "moves_min.json"
 STATS = ("hp", "atk", "def", "spa", "spd", "spe")
 
 # attacker -> defender -> multiplier; only non-neutral entries listed
@@ -89,6 +91,15 @@ def lookup(species: str) -> dict | None:
     return entry
 
 
+@lru_cache(maxsize=1)
+def load_moves() -> dict:
+    return json.loads(MOVES_ASSET.read_text(encoding="utf-8"))
+
+
+def move_info(move_name: str) -> dict | None:
+    return load_moves().get(norm_name(move_name))
+
+
 def build_asset() -> None:
     raw = requests.get(POKEDEX_URL, timeout=60).json()
     dex = {}
@@ -104,5 +115,20 @@ def build_asset() -> None:
           f"({ASSET.stat().st_size / 1024:.0f} KB)")
 
 
+def build_moves_asset() -> None:
+    raw = requests.get(MOVES_URL, timeout=60).json()
+    moves = {}
+    for key, mv in raw.items():
+        moves[key] = {
+            "type": mv["type"].lower(),
+            "category": mv["category"],  # Physical / Special / Status
+            "power": mv.get("basePower", 0),
+        }
+    MOVES_ASSET.write_text(json.dumps(moves, separators=(",", ":")), encoding="utf-8")
+    print(f"Wrote {len(moves)} moves to {MOVES_ASSET.relative_to(ROOT)} "
+          f"({MOVES_ASSET.stat().st_size / 1024:.0f} KB)")
+
+
 if __name__ == "__main__":
     build_asset()
+    build_moves_asset()

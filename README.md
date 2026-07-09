@@ -110,6 +110,11 @@ top-rated game on the ladder right now) and watch the win-probability chart upda
 in real time as the battle is played — and a **Team Predictor** tab: pick 1–5 known
 members of any team and get the most likely hidden teammates, ranked.
 
+Both battle views include an **Advisor** panel: at any chosen turn (or live, right
+now), it ranks the player's switch options by re-scoring the win-probability model
+on the post-switch state, and the active Pokémon's revealed moves by a
+type-chart damage heuristic.
+
 Launch on Windows with `run.bat`, or `python -m streamlit run app.py` (use `python -m`;
 a bare `streamlit` may resolve to a different install).
 
@@ -132,10 +137,11 @@ a bare `streamlit` may resolve to a different install).
       Showdown's WebSocket (battle link, username lookup, or top-rated-now) and stream
       a live-updating win-prob chart; rooms replay history on join, so mid-game
       attachment catches up instantly
-- [ ] **Phase 9 — move advisor**: v1 ranks switch options by re-scoring the win-prob
-      model on hypothetical states + type heuristics for moves; v2 wires Showdown's
-      open-source sim as a local engine for true 1-ply search over the joint action
-      matrix (the Future Sight AI architecture: evaluator + set inference + search)
+- [x] **Phase 9 — move advisor (v1)**: ranks switch options by re-scoring the win-prob
+      model on the hypothetical post-switch state (entry-hazard chip applied by type
+      chart) and revealed moves by a damage heuristic; available at any replay turn
+      and live. v2 (open): wire Showdown's open-source sim as a local engine for true
+      1-ply search over the joint action matrix (the Future Sight AI architecture)
 - [ ] **Phase 10 — skill-band explorer**: pick example replays by Elo band; compare
       blunder rates and win-prob volatility across ratings (low vs mid vs high ladder)
 
@@ -173,7 +179,8 @@ streamlit run app.py            # interactive demo
 │   ├── predict.py       # saved model -> per-turn win probs + key moments
 │   ├── teammates.py     # teammate co-occurrence inference (Phase 5)
 │   ├── live.py          # WebSocket spectator: live battles -> the same parser
-│   └── pokedex.py       # base stats + type chart (tested; see finding 4)
+│   ├── advisor.py       # option ranking: model-scored switches + move heuristic
+│   └── pokedex.py       # species stats, moves data, type chart
 ├── assets/              # distilled pokedex lookup (committed, used at runtime)
 ├── notebooks/           # EDA, modeling, evaluation
 ├── tests/               # parser unit tests + real replay fixtures

@@ -296,15 +296,28 @@ def game_state(parser: BattleParser, id: str | None = None,
         "winner": parser.winner,
         "n_turns": parser.turn,
         "teams": {sid: sorted(s.team) for sid, s in parser.sides.items()},
+        "roster": {
+            sid: [{"species": m.species, "hp": m.hp, "status": m.status,
+                   "fainted": m.fainted, "revealed": m.revealed,
+                   "active": key == side.active, "moves": sorted(m.moves)}
+                  for key, m in side.team.items()]
+            for sid, side in parser.sides.items()
+        },
         "snapshots": list(parser.snapshots),
         "events": dict(parser.events),
     }
 
 
-def parse_replay(replay: dict) -> dict:
-    """Parse one replay JSON (as served by replay.pokemonshowdown.com/<id>.json)."""
+def parse_replay(replay: dict, up_to_turn: int | None = None) -> dict:
+    """Parse one replay JSON (as served by replay.pokemonshowdown.com/<id>.json).
+
+    With `up_to_turn`, parsing stops at the start of that turn — the returned
+    state is exactly what both players saw when picking that turn's actions.
+    """
     parser = BattleParser()
     for line in replay["log"].splitlines():
         parser.feed(line)
+        if up_to_turn is not None and parser.turn >= up_to_turn:
+            break
     return game_state(parser, id=replay.get("id"), format=replay.get("format"),
                       rating=replay.get("rating"))
