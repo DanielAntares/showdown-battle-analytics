@@ -120,6 +120,7 @@ def build_moves_asset() -> None:
     moves = {}
     for key, mv in raw.items():
         moves[key] = {
+            "name": mv.get("name", key),
             "type": mv["type"].lower(),
             "category": mv["category"],  # Physical / Special / Status
             "power": mv.get("basePower", 0),

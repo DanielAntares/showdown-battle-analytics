@@ -15,6 +15,7 @@ engine for Showdown's own simulator.
 
 import pandas as pd
 
+from src.movesets import predict_moves, real_stats
 from src.pokedex import effectiveness, lookup, move_info
 
 BOOST_STATS = ("atk", "def", "spa", "spd", "spe")
@@ -22,12 +23,6 @@ HAZARDS = ("stealthrock", "spikes", "toxicspikes", "stickyweb")
 HAZARD_MAX = {"stealthrock": 1, "spikes": 3, "toxicspikes": 2, "stickyweb": 1}
 SCREENS = ("reflect", "lightscreen", "auroraveil", "tailwind")
 STATUS_IMMUNE = {"brn": "fire", "par": "electric", "tox": "steel", "psn": "steel"}
-DEFAULT_STATS = {s: 80 for s in ("hp", "atk", "def", "spa", "spd", "spe")}
-
-
-def est_stat(base: int, is_hp: bool = False) -> int:
-    """Level-100 stat under a neutral 31 IV / 85 EV assumption."""
-    return 2 * base + 162 if is_hp else 2 * base + 57
 
 
 def boost_mult(stage: int) -> float:
@@ -57,7 +52,7 @@ class _Active:
         self.fainted = mon["fainted"]
         dex = lookup(mon["species"])
         self.types = dex["types"] if dex else []
-        self.stats = {k: dex[k] for k in DEFAULT_STATS} if dex else dict(DEFAULT_STATS)
+        self.stats = real_stats(mon["species"])  # level-100, predicted EV/nature/IV
         self.boosts = dict(boosts) if boosts else {s: 0 for s in BOOST_STATS}
 
 
@@ -81,7 +76,7 @@ class SimState:
 
     def speed(self, side: str) -> float:
         a = self.active[side]
-        spe = est_stat(a.stats["spe"]) * boost_mult(a.boosts["spe"])
+        spe = a.stats["spe"] * boost_mult(a.boosts["spe"])
         return spe * (0.5 if a.status == "par" else 1.0)
 
     def switch(self, side: str, mon: dict) -> None:
@@ -95,14 +90,14 @@ class SimState:
     def damage_fraction(self, side: str, move: dict) -> float:
         atk, dfn = self.active[side], self.active[self._opp(side)]
         physical = move["category"] == "Physical"
-        a_stat = est_stat(atk.stats["atk" if physical else "spa"])
+        a_stat = atk.stats["atk" if physical else "spa"]
         a_stat *= boost_mult(atk.boosts["atk" if physical else "spa"])
         if physical and atk.status == "brn":
             a_stat *= 0.5
-        d_stat = est_stat(dfn.stats["def" if physical else "spd"])
+        d_stat = dfn.stats["def" if physical else "spd"]
         d_stat *= boost_mult(dfn.boosts["def" if physical else "spd"])
         dmg = (42 * move["power"] * a_stat / d_stat) / 50 + 2
-        frac = dmg / est_stat(dfn.stats["hp"], is_hp=True) * 0.925  # avg roll
+        frac = dmg / dfn.stats["hp"] * 0.925  # avg roll
         frac *= 1.5 if move["type"] in atk.types else 1.0
         frac *= effectiveness(move["type"], dfn.types)
         weather = self.snap.get("weather", "")
@@ -179,13 +174,22 @@ class SimState:
 
 
 def _typical_moves(species: str) -> list[dict]:
-    """When nothing is revealed, assume competent STAB coverage."""
+    """Last-resort STAB coverage for species absent from usage data."""
     dex = lookup(species)
     if not dex:
         return []
     category = "Physical" if dex["atk"] >= dex["spa"] else "Special"
-    return [{"name": f"(typical {t} attack)", "type": t, "category": category,
+    return [{"name": f"(likely {t} attack)", "type": t, "category": category,
              "power": 80, "accuracy": 1.0, "priority": 0} for t in dex["types"]]
+
+
+def moves_for(mon: dict) -> list[dict]:
+    """The moves to evaluate for a Pokémon: its revealed moves plus the most
+    likely unrevealed ones (from usage stats), filling up to four. This is what
+    lets the advisor reason about a move a Pokémon hasn't shown yet."""
+    names = predict_moves(mon["species"], revealed=mon.get("moves", ()), k=4)
+    moves = [dict(move_info(n), name=move_info(n)["name"]) for n in names if move_info(n)]
+    return moves or _typical_moves(mon["species"])
 
 
 def player_actions(game: dict, side: str) -> list[dict]:
@@ -193,8 +197,7 @@ def player_actions(game: dict, side: str) -> list[dict]:
     me = next((m for m in roster if m["active"]), None)
     acts = []
     if me and not me["fainted"]:
-        revealed = [dict(move_info(mv), name=mv) for mv in me["moves"] if move_info(mv)]
-        for move in revealed or _typical_moves(me["species"]):
+        for move in moves_for(me):
             acts.append({"kind": "move", "label": move["name"], "move": move})
     for mon in roster:
         if not mon["fainted"] and not mon["active"] and mon["hp"] > 0:

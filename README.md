@@ -95,6 +95,19 @@ Note the crossing dynamics: the usage-only baseline *degrades* as more is reveal
 (the popular picks get used up), while the model *improves* — evidence it reads team
 archetypes, not just popularity.
 
+### Set & moveset prediction
+
+A companion model predicts, for any species, its **likely moves, item, ability, Tera
+type, and EV/nature spread** before the Pokémon reveals anything — distilled from
+Smogon's monthly usage statistics (moves, spreads, items per species at a rating
+baseline). Great Tusk comes back as Jolly 252 Atk / 252 Spe with Rapid Spin / Headlong
+Rush / Ice Spinner; Gholdengo as a Timid special attacker (Attack IV inferred to 0).
+This feeds the advisor two ways: unrevealed moves become real options in the search,
+and the predicted spread gives the damage engine believable speed tiers and bulk. As
+the battle reveals moves they're kept and the rest of the set is re-predicted around
+them. (Honest limit: usage stats are marginal per species, so predictions aren't
+conditioned on the specific team — only on what the battle has revealed.)
+
 ## Demo app
 
 `streamlit run app.py` → paste any Showdown replay URL (or hit "Try an example") and get:
@@ -114,7 +127,10 @@ Both battle views include an **Advisor** panel: at any chosen turn (or live, rig
 now), it recommends the **best action by 1-ply minimax** — every combination of the
 player's options and the opponent's plausible responses is simulated with a damage
 engine and scored by the win-probability model, and the pick is the action with the
-best worst-case outcome.
+best worst-case outcome. Crucially, it reasons about **moves a Pokémon hasn't shown
+yet**: unrevealed moves and EV/nature spreads are predicted from ladder usage stats,
+so the advisor evaluates a Clodsire's likely Earthquake even when only its Toxic has
+been revealed. The panel shows the predicted sets it's assuming.
 
 Launch on Windows with `run.bat`, or `python -m streamlit run app.py` (use `python -m`;
 a bare `streamlit` may resolve to a different install).
@@ -166,8 +182,9 @@ it's mild (3.1 vs 3.3–4.0 blunder-sized swings per 100 turns). Skill shows up 
       approximate battle engine (level-100 damage formula, STAB/type chart, boosts,
       burn/paralysis, speed & priority ordering, screens, weather, hazard chip,
       common utility effects) and scored by the win-prob model; the recommendation
-      maximizes the worst case. v3 (open): swap the engine for Showdown's own
-      simulator to add items, abilities, and exact mechanics
+      maximizes the worst case. Unrevealed moves and EV/nature/IV spreads are predicted
+      from usage stats ([src/movesets.py](src/movesets.py)). v3 (open): swap the engine
+      for Showdown's own simulator to add items, abilities, and exact mechanics
 - [x] **Phase 10 — skill-band explorer**: blunder-rate and volatility analysis across
       Elo bands (results above); Elo-band example picker for replays and a minimum-Elo
       filter for live battles in the app
@@ -206,7 +223,9 @@ streamlit run app.py            # interactive demo
 │   ├── predict.py       # saved model -> per-turn win probs + key moments
 │   ├── teammates.py     # teammate co-occurrence inference (Phase 5)
 │   ├── live.py          # WebSocket spectator: live battles -> the same parser
-│   ├── advisor.py       # option ranking: model-scored switches + move heuristic
+│   ├── advisor.py       # best-action 1-ply minimax + damage engine
+│   ├── movesets.py      # predict moves / item / spread from usage stats
+│   ├── usage_stats.py   # Smogon chaos stats downloader
 │   ├── skill_bands.py   # blunder/volatility analysis across Elo bands
 │   └── pokedex.py       # species stats, moves data, type chart
 ├── assets/              # distilled pokedex lookup (committed, used at runtime)

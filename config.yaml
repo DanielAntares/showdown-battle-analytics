@@ -11,7 +11,7 @@ train_min_rating: 1300          # older low-elo games stay on disk (skill-band a
 
 # ---- smogon usage stats (Phase 3/5 features) --------------------------------
 stats_month: "2026-06"
-stats_baseline: 1695    # rating cutoff of the stats file: 0 / 1500 / 1695 / 1825
+stats_baseline: 1500    # rating cutoff of the stats file (0/1500/1695/1825); 1500 ≈ our 1300+ corpus
 
 # ---- paths (relative to repo root) ------------------------------------------
 paths:

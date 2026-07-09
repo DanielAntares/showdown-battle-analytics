@@ -13,6 +13,7 @@ import streamlit as st
 
 from src.advisor import advise_search
 from src.common import ROOT
+from src.movesets import moveset_with_probs, predict_spread, species_set
 from src.live import LiveBattle, find_user_battle, list_battles
 from src.parser import parse_replay
 from src.predict import (actions_by_turn, fetch_replay, key_moments, load_model,
@@ -75,8 +76,45 @@ def render_advisor(game: dict, names: dict, key_prefix: str) -> None:
     st.caption("⚠️ 1-ply minimax over every (action × opponent response) pair, each "
                "simulated with a level-100 damage engine (STAB, type chart, boosts, "
                "burn/paralysis, screens, weather, hazard chip) and scored by the "
-               "win-probability model. Uses revealed info only; unrevealed movesets "
-               "assume typical STAB attacks; items/abilities/Tera are not modeled.")
+               "win-probability model. Unrevealed moves and EV/nature spreads are "
+               "predicted from ladder usage stats (see the sets below).")
+
+    with st.expander("🔮 Predicted sets in play (from ladder usage)"):
+        for s in (side, "p2" if side == "p1" else "p1"):
+            active = next((m for m in game["roster"][s] if m["active"]), None)
+            if active:
+                who = "This side" if s == side else "Opponent"
+                st.markdown(f"*{who}'s active* — " +
+                            predicted_set_md(active["species"], active.get("moves", ())))
+        st.caption("Predictions are species-level from Smogon usage at a rating "
+                   "baseline; they are not conditioned on the specific team, but ✓ "
+                   "marks moves this battle has already revealed.")
+
+
+EV_LABELS = ["HP", "Atk", "Def", "SpA", "SpD", "Spe"]
+
+
+def predicted_set_md(species: str, revealed=()) -> str:
+    """A markdown block: likely moves (with usage %), item, ability, spread."""
+    entry = species_set(species)
+    if not entry:
+        return f"**{species}** — not enough ladder data to predict a set."
+    moves = moveset_with_probs(species, 6)
+    rev = {m.lower().replace(" ", "").replace("-", "") for m in revealed}
+    move_lines = []
+    for name, prob in moves:
+        seen = "✓ " if name.lower().replace(" ", "").replace("-", "") in rev else ""
+        move_lines.append(f"{seen}{name} ({prob:.0%})")
+    spread = predict_spread(species)
+    evs = " / ".join(f"{v} {lab}" for v, lab in zip(spread["evs"], EV_LABELS) if v)
+    nat = spread.get("nature", "")
+    item = entry["item"][0][0] if entry.get("item") else "?"
+    ability = entry["ability"][0][0] if entry.get("ability") else "?"
+    tera = entry["tera"][0][0].title() if entry.get("tera") else "?"
+    atk_iv = " · 0 Atk IV" if spread.get("atk_iv") == 0 else ""
+    return (f"**{species}** — likely {item}, {ability}, Tera {tera}  \n"
+            f"Moves: {' · '.join(move_lines)}  \n"
+            f"Spread: {nat} {evs}{atk_iv}")
 
 
 def render_key_moments(game: dict, probs, names: dict) -> None:
@@ -263,6 +301,14 @@ def render_team_predictor() -> None:
     st.caption("Held-out evaluation: given 3 known members, the top-ranked guess is one "
                "of the 3 hidden teammates 41% of the time (usage-only baseline: 18%), "
                "and 58% of the hidden team appears in the top 10.")
+
+    st.divider()
+    st.markdown("#### Predicted sets")
+    st.caption("The likely moves, item, ability, Tera, and EV/nature spread for any "
+               "Pokémon — what you'd expect before it reveals anything.")
+    known_plus_top = revealed + [t for t in top.species if t not in revealed][:3]
+    for species in known_plus_top:
+        st.markdown(predicted_set_md(species))
 
 
 def _start_live(ref: str) -> None:
