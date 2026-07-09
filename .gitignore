@@ -1,7 +1,7 @@
-# data and models are re-buildable from public APIs; keep the repo light
+# data is re-buildable from public APIs; keep the repo light.
+# models/ IS committed (7 MB) so the deployed demo can serve predictions.
 data/
 !data/**/.gitkeep
-models/
 
 .claude/settings.local.json
 
