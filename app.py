@@ -11,7 +11,7 @@ import plotly.graph_objects as go
 import requests
 import streamlit as st
 
-from src.advisor import advise
+from src.advisor import advise_search
 from src.common import ROOT
 from src.live import LiveBattle, find_user_battle, list_battles
 from src.parser import parse_replay
@@ -55,32 +55,28 @@ def analyze(replay_ref: str):
 
 
 def render_advisor(game: dict, names: dict, key_prefix: str) -> None:
-    """Ranked switches (model-scored) and revealed moves (damage heuristic)."""
+    """Best-action search: 1-ply minimax over the joint action matrix."""
     side_name = st.radio("Options for", [names["p1"], names["p2"]],
                          horizontal=True, key=f"{key_prefix}_side")
     side = "p1" if side_name == names["p1"] else "p2"
     booster, meta = cached_model()
-    out = advise(game, side, booster, meta, snapshot_features)
-
-    active = next((m["species"] for m in game["roster"][side] if m["active"]), "?")
-    c1, c2 = st.columns(2)
-    c1.markdown(f"**Switch options** — scored by the win-prob model")
-    if len(out["switches"]):
-        sw = out["switches"].assign(
-            win_prob=lambda d: d.win_prob.map("{:.0%}".format),
-            hazard_chip=lambda d: d.hazard_chip.map("{:.0%}".format))
-        c1.dataframe(sw, hide_index=True, width="stretch")
-    else:
-        c1.caption("no healthy bench Pokémon to switch to")
-    c2.markdown(f"**{active}'s revealed moves** — damage heuristic")
-    if len(out["moves"]):
-        c2.dataframe(out["moves"], hide_index=True, width="stretch")
-    else:
-        c2.caption("no moves revealed yet for the active Pokémon")
-    st.caption("⚠️ v1 heuristic: uses only information revealed in this battle; doesn't "
-               "model the opponent's simultaneous choice, hidden items, or abilities. "
-               "Switch scores come from the win-probability model on the post-switch "
-               "state; move scores are power × STAB × type chart × stat ratio.")
+    with st.spinner("simulating action matrix…"):
+        out = advise_search(game, side, booster, meta, snapshot_features)
+    if not len(out):
+        st.caption("no legal actions to evaluate (active Pokémon fainted or unknown)")
+        return
+    best = out.iloc[0]
+    st.success(f"**Best action: {best.action}** — {best.worst_case:.0%} win probability "
+               f"even against the opponent's best response ({best.worst_response})")
+    st.dataframe(out.assign(
+        worst_case=lambda d: d.worst_case.map("{:.0%}".format),
+        average=lambda d: d.average.map("{:.0%}".format)),
+        hide_index=True, width="stretch")
+    st.caption("⚠️ 1-ply minimax over every (action × opponent response) pair, each "
+               "simulated with a level-100 damage engine (STAB, type chart, boosts, "
+               "burn/paralysis, screens, weather, hazard chip) and scored by the "
+               "win-probability model. Uses revealed info only; unrevealed movesets "
+               "assume typical STAB attacks; items/abilities/Tera are not modeled.")
 
 
 def render_key_moments(game: dict, probs, names: dict) -> None:
@@ -336,7 +332,7 @@ def render_live_spectator() -> None:
         _start_live(ref.strip())
     min_elo = c2.selectbox("min Elo", ["any", "1300+", "1500+", "1700+"], index=2,
                            key="live_elo", label_visibility="collapsed")
-    if c3.button("Watch a live battle"):
+    if c3.button("Watch random live battle"):
         with st.spinner("fetching the live battle list…"):
             battles = list_battles()
         floor = 0 if min_elo == "any" else int(min_elo.rstrip("+"))

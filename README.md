@@ -111,9 +111,10 @@ in real time as the battle is played — and a **Team Predictor** tab: pick 1–
 members of any team and get the most likely hidden teammates, ranked.
 
 Both battle views include an **Advisor** panel: at any chosen turn (or live, right
-now), it ranks the player's switch options by re-scoring the win-probability model
-on the post-switch state, and the active Pokémon's revealed moves by a
-type-chart damage heuristic.
+now), it recommends the **best action by 1-ply minimax** — every combination of the
+player's options and the opponent's plausible responses is simulated with a damage
+engine and scored by the win-probability model, and the pick is the action with the
+best worst-case outcome.
 
 Launch on Windows with `run.bat`, or `python -m streamlit run app.py` (use `python -m`;
 a bare `streamlit` may resolve to a different install).
@@ -160,11 +161,13 @@ it's mild (3.1 vs 3.3–4.0 blunder-sized swings per 100 turns). Skill shows up 
       Showdown's WebSocket (battle link, username lookup, or top-rated-now) and stream
       a live-updating win-prob chart; rooms replay history on join, so mid-game
       attachment catches up instantly
-- [x] **Phase 9 — move advisor (v1)**: ranks switch options by re-scoring the win-prob
-      model on the hypothetical post-switch state (entry-hazard chip applied by type
-      chart) and revealed moves by a damage heuristic; available at any replay turn
-      and live. v2 (open): wire Showdown's open-source sim as a local engine for true
-      1-ply search over the joint action matrix (the Future Sight AI architecture)
+- [x] **Phase 9 — best-action search (v2)**: 1-ply minimax over the joint action
+      matrix — every (my action × opponent response) pair is played out by an
+      approximate battle engine (level-100 damage formula, STAB/type chart, boosts,
+      burn/paralysis, speed & priority ordering, screens, weather, hazard chip,
+      common utility effects) and scored by the win-prob model; the recommendation
+      maximizes the worst case. v3 (open): swap the engine for Showdown's own
+      simulator to add items, abilities, and exact mechanics
 - [x] **Phase 10 — skill-band explorer**: blunder-rate and volatility analysis across
       Elo bands (results above); Elo-band example picker for replays and a minimum-Elo
       filter for live battles in the app

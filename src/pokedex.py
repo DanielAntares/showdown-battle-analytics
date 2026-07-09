@@ -123,6 +123,16 @@ def build_moves_asset() -> None:
             "type": mv["type"].lower(),
             "category": mv["category"],  # Physical / Special / Status
             "power": mv.get("basePower", 0),
+            "priority": mv.get("priority", 0),
+            "accuracy": 1.0 if mv.get("accuracy") is True else mv.get("accuracy", 100) / 100,
+            "target": mv.get("target", "normal"),
+            # effect payloads the turn simulator understands
+            "inflicts": mv.get("status"),                     # brn / par / tox / ...
+            "boosts": mv.get("boosts"),                       # e.g. {"atk": 2}
+            "side_condition": (mv.get("sideCondition") or "").lower() or None,
+            "heal": bool(mv.get("heal")) or key in ("recover", "roost", "slackoff",
+                                                    "softboiled", "moonlight",
+                                                    "morningsun", "synthesis"),
         }
     MOVES_ASSET.write_text(json.dumps(moves, separators=(",", ":")), encoding="utf-8")
     print(f"Wrote {len(moves)} moves to {MOVES_ASSET.relative_to(ROOT)} "
