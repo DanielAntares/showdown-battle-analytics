@@ -10,6 +10,7 @@ import plotly.graph_objects as go
 import requests
 import streamlit as st
 
+from src.live import LiveBattle, find_user_battle, list_battles
 from src.parser import parse_replay
 from src.predict import (actions_by_turn, fetch_replay, key_moments, load_model,
                          predict_game)
@@ -177,13 +178,87 @@ def render_team_predictor() -> None:
                "and 58% of the hidden team appears in the top 10.")
 
 
+def _start_live(ref: str) -> None:
+    """Resolve a battle link/room id/username and start spectating it."""
+    room = None
+    if "battle-" in ref:
+        room = ref
+    elif ref:
+        with st.spinner(f"looking up {ref}'s current battle…"):
+            room = find_user_battle(ref)
+        if room is None:
+            st.error(f"Couldn't find a public battle for '{ref}' — are they "
+                     "currently playing, with battles visible?")
+            return
+    if not room:
+        return
+    if "live" in st.session_state:
+        st.session_state.live.close()
+    try:
+        st.session_state.live = LiveBattle(room)
+    except ValueError as exc:
+        st.error(str(exc))
+
+
+@st.fragment(run_every="3s")
+def live_panel() -> None:
+    live = st.session_state.get("live")
+    if live is None:
+        return
+    game = live.snapshot_game()
+    icon = {"live": "🔴", "ended": "🏁", "connecting": "⏳"}.get(live.status, "⚠️")
+    p1, p2 = game["p1_name"] or "p1", game["p2_name"] or "p2"
+    st.caption(f"{icon} {live.status} · `{live.room}` · {p1} vs {p2}")
+    if live.status == "error":
+        st.error(live.error)
+        return
+    if game["n_turns"] < 1:
+        st.info("Connected — waiting for the first turn…")
+        return
+    booster, meta = cached_model()
+    probs = predict_game(game, booster, meta)
+    c1, c2 = st.columns(2)
+    delta = f"{probs.iloc[-1] - probs.iloc[-2]:+.0%} last turn" if len(probs) > 1 else None
+    c1.metric(f"P({p1} wins) right now", f"{probs.iloc[-1]:.0%}", delta)
+    c2.metric("Turn", game["n_turns"])
+    st.plotly_chart(winprob_figure(game, probs), width="stretch")
+    if live.status == "ended" and game["winner"]:
+        st.success(f"Battle over — {game[game['winner'] + '_name']} won.")
+
+
+def render_live_spectator() -> None:
+    st.markdown("Watch any **public ladder battle** with a live-updating win-probability "
+                "chart. Paste a battle link, or a username to find their current game — "
+                "or just grab the highest-rated battle happening right now.")
+    ref = st.text_input("Battle link / room id / username", key="live_ref",
+                        placeholder="https://play.pokemonshowdown.com/battle-gen9ou-…  or  someusername")
+    c1, c2, c3 = st.columns(3)
+    if c1.button("Watch", type="primary") and ref.strip():
+        _start_live(ref.strip())
+    if c2.button("Top rated battle now"):
+        with st.spinner("fetching the live battle list…"):
+            battles = list_battles()
+        if battles:
+            _start_live(battles[0]["room"])
+        else:
+            st.error("Couldn't fetch the live battle list — try again in a moment.")
+    if "live" in st.session_state and c3.button("Stop watching"):
+        st.session_state.live.close()
+        del st.session_state["live"]
+        st.rerun()
+    live_panel()
+
+
 st.title("Pokémon Showdown — Win Probability")
 st.caption(
     "Turn-by-turn win probability for ranked Gen 9 OU battles. LightGBM trained on "
     "~14k games rated 1300+; evaluated on strictly newer games (log loss 0.608, AUC 0.72).")
 
-tab_replay, tab_team = st.tabs(["📈 Replay analyzer", "🔮 Team predictor"])
+tab_replay, tab_live, tab_team = st.tabs(
+    ["📈 Replay analyzer", "🔴 Live spectator", "🔮 Team predictor"])
 with tab_replay:
     render_replay_analyzer()
+with tab_live:
+    render_live_spectator()
 with tab_team:
     render_team_predictor()

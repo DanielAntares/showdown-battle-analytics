@@ -89,6 +89,7 @@ class BattleParser:
         self.weather = ""
         self.field: set[str] = set()  # terrains, trick room, ...
         self.turn = 0
+        self.tier = ""
         self.winner: str | None = None
         self.snapshots: list[dict] = []
         self.events: dict[int, list] = {}  # turn -> what both players did
@@ -153,7 +154,9 @@ class BattleParser:
         p = line.split("|")
         cmd = p[1]
 
-        if cmd == "player" and len(p) > 3 and p[2] in self.sides and p[3]:
+        if cmd == "tier":
+            self.tier = p[2]
+        elif cmd == "player" and len(p) > 3 and p[2] in self.sides and p[3]:
             side = self.sides[p[2]]
             side.name = p[3]
             if len(p) > 5 and p[5].isdigit():
@@ -278,16 +281,14 @@ class BattleParser:
         return row
 
 
-def parse_replay(replay: dict) -> dict:
-    """Parse one replay JSON (as served by replay.pokemonshowdown.com/<id>.json)."""
-    parser = BattleParser()
-    for line in replay["log"].splitlines():
-        parser.feed(line)
+def game_state(parser: BattleParser, id: str | None = None,
+               format: str | None = None, rating: int | None = None) -> dict:
+    """The game dict downstream code consumes — from any parser (replay or live)."""
     p1, p2 = parser.sides["p1"], parser.sides["p2"]
     return {
-        "id": replay.get("id"),
-        "format": replay.get("format"),
-        "rating": replay.get("rating"),
+        "id": id,
+        "format": format or parser.tier,
+        "rating": rating,
         "p1_name": p1.name,
         "p2_name": p2.name,
         "p1_rating": p1.rating,
@@ -295,6 +296,15 @@ def parse_replay(replay: dict) -> dict:
         "winner": parser.winner,
         "n_turns": parser.turn,
         "teams": {sid: sorted(s.team) for sid, s in parser.sides.items()},
-        "snapshots": parser.snapshots,
-        "events": parser.events,
+        "snapshots": list(parser.snapshots),
+        "events": dict(parser.events),
     }
+
+
+def parse_replay(replay: dict) -> dict:
+    """Parse one replay JSON (as served by replay.pokemonshowdown.com/<id>.json)."""
+    parser = BattleParser()
+    for line in replay["log"].splitlines():
+        parser.feed(line)
+    return game_state(parser, id=replay.get("id"), format=replay.get("format"),
+                      rating=replay.get("rating"))

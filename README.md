@@ -105,8 +105,13 @@ archetypes, not just popularity.
 - the model's verdict: final read on the actual winner and the turn from which it
   called the game without flipping again
 
-Plus a **Team Predictor** tab: pick 1–5 known members of any team and get the most
-likely hidden teammates, ranked with relative likelihoods.
+Plus a **Live spectator** tab — paste a battle link or a username (or grab the
+top-rated game on the ladder right now) and watch the win-probability chart update
+in real time as the battle is played — and a **Team Predictor** tab: pick 1–5 known
+members of any team and get the most likely hidden teammates, ranked.
+
+Launch on Windows with `run.bat`, or `python -m streamlit run app.py` (use `python -m`;
+a bare `streamlit` may resolve to a different install).
 
 ## Roadmap
 
@@ -123,9 +128,10 @@ likely hidden teammates, ranked with relative likelihoods.
       with luck events (crits, misses) separated, swing-severity grading in key moments
 - [x] **Phase 7 — dataset v2**: 27.8k games collected, 18.7k at the 1300+ training floor
       (train filter `train_min_rating` keeps low-Elo games on disk for skill-band analysis)
-- [ ] **Phase 8 — live spectator mode**: attach to an ongoing public battle over
-      Showdown's WebSocket and stream the win-prob chart in real time — the live protocol
-      is identical to replay logs, and the parser is already incremental (`feed()` per line)
+- [x] **Phase 8 — live spectator mode**: attach to an ongoing public battle over
+      Showdown's WebSocket (battle link, username lookup, or top-rated-now) and stream
+      a live-updating win-prob chart; rooms replay history on join, so mid-game
+      attachment catches up instantly
 - [ ] **Phase 9 — move advisor**: v1 ranks switch options by re-scoring the win-prob
       model on hypothetical states + type heuristics for moves; v2 wires Showdown's
       open-source sim as a local engine for true 1-ply search over the joint action
@@ -166,6 +172,7 @@ streamlit run app.py            # interactive demo
 │   ├── train.py         # baselines + LightGBM, calibration evaluation
 │   ├── predict.py       # saved model -> per-turn win probs + key moments
 │   ├── teammates.py     # teammate co-occurrence inference (Phase 5)
+│   ├── live.py          # WebSocket spectator: live battles -> the same parser
 │   └── pokedex.py       # base stats + type chart (tested; see finding 4)
 ├── assets/              # distilled pokedex lookup (committed, used at runtime)
 ├── notebooks/           # EDA, modeling, evaluation

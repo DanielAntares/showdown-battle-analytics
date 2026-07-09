@@ -8,4 +8,5 @@ scikit-learn>=1.4    # baselines + calibration (Phase 3)
 lightgbm>=4.3        # gradient-boosted win-prob model (Phase 3)
 matplotlib>=3.8      # evaluation plots (reliability diagrams)
 plotly>=5.20         # interactive win-prob timeline in the app
-streamlit>=1.49      # demo app (Phase 4)
+streamlit>=1.49      # demo app (Phase 4); uses st.fragment for the live panel
+websocket-client>=1.6  # live battle spectating over Showdown's WebSocket (Phase 8)
