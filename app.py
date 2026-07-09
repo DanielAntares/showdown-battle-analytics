@@ -6,11 +6,13 @@ Run with:
 
 import random
 
+import pandas as pd
 import plotly.graph_objects as go
 import requests
 import streamlit as st
 
 from src.advisor import advise
+from src.common import ROOT
 from src.live import LiveBattle, find_user_battle, list_battles
 from src.parser import parse_replay
 from src.predict import (actions_by_turn, fetch_replay, key_moments, load_model,
@@ -22,6 +24,9 @@ SURFACE, GRID, BASELINE, INK_2, MUTED = "#fcfcfb", "#e1e0d9", "#c3c2b7", "#52514
 BLUE, AQUA = "#2a78d6", "#1baf7a"
 
 EXAMPLES = ["gen9ou-2645435074", "gen9ou-2645436173", "gen9ou-2645435369"]
+BAND_RANGES = {"1100–1299": (1100, 1300), "1300–1499": (1300, 1500),
+               "1500–1699": (1500, 1700), "1700+": (1700, 2100)}
+GAMES_PARQUET = ROOT / "data" / "processed" / "games.parquet"
 
 st.set_page_config(page_title="Showdown Win Probability", page_icon="📈", layout="centered")
 
@@ -167,10 +172,33 @@ def set_example():
     st.session_state.replay_ref = random.choice(EXAMPLES)
 
 
+@st.cache_data(show_spinner=False)
+def game_index() -> pd.DataFrame | None:
+    """Local corpus index for the Elo-band example picker (None on cloud deploys)."""
+    if not GAMES_PARQUET.exists():
+        return None
+    return pd.read_parquet(GAMES_PARQUET, columns=["id", "rating"])
+
+
+def pick_band_example():
+    idx = game_index()
+    lo, hi = BAND_RANGES[st.session_state.ex_band]
+    pool = idx[idx.rating.between(lo, hi - 1)]
+    if len(pool):
+        st.session_state.replay_ref = pool.id.sample(1).iloc[0]
+
+
 def render_replay_analyzer() -> None:
     st.text_input("Replay URL or ID", key="replay_ref",
                   placeholder="https://replay.pokemonshowdown.com/gen9ou-...")
-    st.button("Try an example replay", on_click=set_example)
+    if game_index() is not None:
+        c1, c2 = st.columns([1, 2])
+        c1.selectbox("Elo band", list(BAND_RANGES), index=3, key="ex_band",
+                     label_visibility="collapsed")
+        c2.button("Random example from this Elo band", on_click=pick_band_example,
+                  help="Compare how chaotic low-ladder games look vs high-ladder ones")
+    else:
+        st.button("Try an example replay", on_click=set_example)
 
     ref = st.session_state.get("replay_ref", "").strip()
     if not ref:
@@ -303,17 +331,21 @@ def render_live_spectator() -> None:
                 "or just grab the highest-rated battle happening right now.")
     ref = st.text_input("Battle link / room id / username", key="live_ref",
                         placeholder="https://play.pokemonshowdown.com/battle-gen9ou-…  or  someusername")
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns([1, 1.4, 1, 1])
     if c1.button("Watch", type="primary") and ref.strip():
         _start_live(ref.strip())
-    if c2.button("Top rated battle now"):
+    min_elo = c2.selectbox("min Elo", ["any", "1300+", "1500+", "1700+"], index=2,
+                           key="live_elo", label_visibility="collapsed")
+    if c3.button("Watch a live battle"):
         with st.spinner("fetching the live battle list…"):
             battles = list_battles()
-        if battles:
-            _start_live(battles[0]["room"])
+        floor = 0 if min_elo == "any" else int(min_elo.rstrip("+"))
+        pool = [b for b in battles if b["min_elo"] >= floor]
+        if pool:
+            _start_live(random.choice(pool[:8])["room"])
         else:
-            st.error("Couldn't fetch the live battle list — try again in a moment.")
-    if "live" in st.session_state and c3.button("Stop watching"):
+            st.error(f"No live battle at {min_elo} right now — try a lower floor.")
+    if "live" in st.session_state and c4.button("Stop watching"):
         st.session_state.live.close()
         del st.session_state["live"]
         st.rerun()

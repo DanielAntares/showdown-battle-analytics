@@ -118,6 +118,29 @@ type-chart damage heuristic.
 Launch on Windows with `run.bat`, or `python -m streamlit run app.py` (use `python -m`;
 a bare `streamlit` may resolve to a different install).
 
+### Does skill change the shape of a game? (Phase 10)
+
+Sampling 600 games per Elo band (using the sub-1300 games kept outside the training
+set) and replaying them through the model:
+
+| Elo band | Blunders/game | per 100 turns | Volatility (mean \|Δ\|/turn) | Mean turns |
+|---|---|---|---|---|
+| 1100–1299 | 0.77 | 3.3 | 7.3% | 23.4 |
+| 1300–1499 | 0.99 | 4.0 | 7.9% | 25.0 |
+| 1500–1699 | 0.89 | 3.5 | 7.9% | 25.3 |
+| 1700+ | 0.89 | 3.1 | 7.7% | 29.0 |
+
+![Blunders and volatility by Elo band](reports/figures/skill_bands.png)
+
+**The naive hypothesis — "higher Elo means smoother win-prob curves" — does not
+survive contact with the data.** Raw blunder counts are nearly flat, and low-Elo games
+actually *look* calmest. The resolution is a selection effect: low-ladder games snowball
+into early blowouts, and a decided game can't swing (the probability is already pinned);
+high-ladder games stay contested longer (29 vs 23 turns), which is where swings are
+even possible. Only after normalizing per turn does the expected gradient appear — and
+it's mild (3.1 vs 3.3–4.0 blunder-sized swings per 100 turns). Skill shows up less as
+"fewer big swings" and more as "longer, closer games."
+
 ## Roadmap
 
 - [x] **Phase 0 — feasibility**: verify replay API pagination, log format, usage stats availability
@@ -142,8 +165,9 @@ a bare `streamlit` may resolve to a different install).
       chart) and revealed moves by a damage heuristic; available at any replay turn
       and live. v2 (open): wire Showdown's open-source sim as a local engine for true
       1-ply search over the joint action matrix (the Future Sight AI architecture)
-- [ ] **Phase 10 — skill-band explorer**: pick example replays by Elo band; compare
-      blunder rates and win-prob volatility across ratings (low vs mid vs high ladder)
+- [x] **Phase 10 — skill-band explorer**: blunder-rate and volatility analysis across
+      Elo bands (results above); Elo-band example picker for replays and a minimum-Elo
+      filter for live battles in the app
 
 ## Known modeling caveats
 
@@ -180,6 +204,7 @@ streamlit run app.py            # interactive demo
 │   ├── teammates.py     # teammate co-occurrence inference (Phase 5)
 │   ├── live.py          # WebSocket spectator: live battles -> the same parser
 │   ├── advisor.py       # option ranking: model-scored switches + move heuristic
+│   ├── skill_bands.py   # blunder/volatility analysis across Elo bands
 │   └── pokedex.py       # species stats, moves data, type chart
 ├── assets/              # distilled pokedex lookup (committed, used at runtime)
 ├── notebooks/           # EDA, modeling, evaluation
