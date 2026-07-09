@@ -77,17 +77,20 @@ def find_user_battle(username: str) -> str | None:
 class LiveBattle:
     """Background spectator: joins a room and keeps a BattleParser current."""
 
-    def __init__(self, room: str):
+    def __init__(self, room: str, connect: bool = True):
         self.room = normalize_room(room)
         self.parser = BattleParser()
+        self.log: list[str] = []  # raw room lines, kept for turn-by-turn review
         self.status = "connecting"
         self.error = ""
         self._lock = threading.Lock()
-        self._ws = websocket.WebSocketApp(
-            WS_URL, on_message=self._on_message,
-            on_error=self._on_error, on_close=self._on_close)
-        threading.Thread(target=self._ws.run_forever,
-                         kwargs={"ping_interval": 30}, daemon=True).start()
+        self._ws = None
+        if connect:
+            self._ws = websocket.WebSocketApp(
+                WS_URL, on_message=self._on_message,
+                on_error=self._on_error, on_close=self._on_close)
+            threading.Thread(target=self._ws.run_forever,
+                             kwargs={"ping_interval": 30}, daemon=True).start()
 
     def _on_message(self, ws, msg):
         lines = msg.split("\n")
@@ -103,6 +106,7 @@ class LiveBattle:
                     elif line.startswith("|noinit|"):
                         self.status = "error"
                         self.error = "room not found (battle over or private)"
+                    self.log.append(line)
                     self.parser.feed(line)
 
     def _on_error(self, ws, err):
@@ -119,5 +123,11 @@ class LiveBattle:
         with self._lock:
             return game_state(self.parser, id=self.room)
 
+    def raw_log(self) -> str:
+        """The battle log so far — replayable through parse_replay(up_to_turn=N)."""
+        with self._lock:
+            return "\n".join(self.log)
+
     def close(self) -> None:
-        self._ws.close()
+        if self._ws is not None:
+            self._ws.close()

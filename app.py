@@ -14,7 +14,7 @@ from src.advisor import advise
 from src.live import LiveBattle, find_user_battle, list_battles
 from src.parser import parse_replay
 from src.predict import (actions_by_turn, fetch_replay, key_moments, load_model,
-                         predict_game, snapshot_features)
+                         predict_game, snapshot_features, turn_story)
 from src.teammates import TeammateModel
 
 # chart chrome + series colors from the validated reference palette (dataviz skill)
@@ -76,6 +76,46 @@ def render_advisor(game: dict, names: dict, key_prefix: str) -> None:
                "model the opponent's simultaneous choice, hidden items, or abilities. "
                "Switch scores come from the win-probability model on the post-switch "
                "state; move scores are power × STAB × type chart × stat ratio.")
+
+
+def render_key_moments(game: dict, probs, names: dict) -> None:
+    for m in key_moments(game, probs):
+        towards = names["p1" if m["delta"] > 0 else "p2"]
+        if m["luck"]:
+            tag = f"🎲 luck involved: {'; '.join(m['luck'])}"
+        elif m["severity"] == "major":
+            tag = f"⚠️ major swing against {names[m['against']]} — possible blunder"
+        elif m["severity"] == "big":
+            tag = f"big swing against {names[m['against']]} — possible mistake"
+        else:
+            tag = ""
+        lines = [f"**Turn {m['turn']}** · `{m['delta']:+.0%}` toward **{towards}**"
+                 + (f" — {tag}" if tag else "")]
+        for side in ("p1", "p2"):
+            if m["story"][side]:
+                lines.append(f"&nbsp;&nbsp;&nbsp;{names[side]}: "
+                             f"{'; '.join(m['story'][side])}")
+        st.markdown("  \n".join(lines))
+
+
+def render_turn_review(state_at, game: dict, probs, names: dict, key_prefix: str) -> None:
+    """Post-hoc analysis of any single turn: prediction, actions, and the advisor
+    as of that turn's start (using only what was revealed by then)."""
+    turn = int(st.number_input("Review turn", min_value=1, max_value=game["n_turns"],
+                               value=game["n_turns"], key=f"{key_prefix}_turn"))
+    p_before = probs.loc[turn]
+    delta = probs.loc[turn + 1] - p_before if turn + 1 in probs.index else None
+    c1, c2 = st.columns(2)
+    c1.metric(f"P({names['p1']} wins) at turn {turn} start", f"{p_before:.0%}",
+              f"{delta:+.0%} over this turn" if delta is not None else None)
+    story = turn_story(game, turn)
+    played = [f"**{names[s]}**: {'; '.join(story[s])}" for s in ("p1", "p2") if story[s]]
+    if story["luck"]:
+        played.append(f"🎲 {'; '.join(story['luck'])}")
+    c2.markdown("  \n".join(played) if played else "*no actions recorded this turn*")
+
+    st.markdown(f"**Advisor — options available at the start of turn {turn}:**")
+    render_advisor(state_at(turn), names, key_prefix=f"{key_prefix}_adv")
 
 
 def winprob_figure(game: dict, probs) -> go.Figure:
@@ -165,34 +205,16 @@ def render_replay_analyzer() -> None:
 
     st.subheader("Key moments")
     names = {"p1": p1, "p2": p2}
-    for m in key_moments(game, probs):
-        towards = names["p1" if m["delta"] > 0 else "p2"]
-        if m["luck"]:
-            tag = f"🎲 luck involved: {'; '.join(m['luck'])}"
-        elif m["severity"] == "major":
-            tag = f"⚠️ major swing against {names[m['against']]} — possible blunder"
-        elif m["severity"] == "big":
-            tag = f"big swing against {names[m['against']]} — possible mistake"
-        else:
-            tag = ""
-        lines = [f"**Turn {m['turn']}** · `{m['delta']:+.0%}` toward **{towards}**"
-                 + (f" — {tag}" if tag else "")]
-        for side in ("p1", "p2"):
-            if m["story"][side]:
-                lines.append(f"&nbsp;&nbsp;&nbsp;{names[side]}: "
-                             f"{'; '.join(m['story'][side])}")
-        st.markdown("  \n".join(lines))
+    render_key_moments(game, probs, names)
 
     with st.expander("Teams (as revealed in this replay)"):
         t1, t2 = st.columns(2)
         t1.markdown(f"**{p1}**\n\n" + "\n".join(f"- {s}" for s in game["teams"]["p1"]))
         t2.markdown(f"**{p2}**\n\n" + "\n".join(f"- {s}" for s in game["teams"]["p2"]))
 
-    with st.expander("🧠 Advisor — what were the options at a given turn?"):
-        turn = st.number_input("At the start of turn", min_value=1,
-                               max_value=game["n_turns"], value=game["n_turns"])
-        state = parse_replay(fetch_raw(ref), up_to_turn=int(turn))
-        render_advisor(state, {"p1": p1, "p2": p2}, key_prefix="replay_adv")
+    with st.expander("🔎 Turn review — prediction, actions, and the advisor at any turn"):
+        render_turn_review(lambda t: parse_replay(fetch_raw(ref), up_to_turn=t),
+                           game, probs, names, key_prefix="replay_rev")
 
     st.caption("Probabilities are the model's read at the *start* of each turn. "
                "Data: public replays from replay.pokemonshowdown.com.")
@@ -264,9 +286,15 @@ def live_panel() -> None:
     c2.metric("Turn", game["n_turns"])
     st.plotly_chart(winprob_figure(game, probs), width="stretch")
     if live.status == "ended" and game["winner"]:
-        st.success(f"Battle over — {game[game['winner'] + '_name']} won.")
-    with st.expander("🧠 Advisor — options right now"):
-        render_advisor(game, {"p1": p1, "p2": p2}, key_prefix="live_adv")
+        st.success(f"Battle over — {game[game['winner'] + '_name']} won. "
+                   "Use the panels below to review what decided it.")
+    names = {"p1": p1, "p2": p2}
+    with st.expander("📌 Key moments so far", expanded=live.status == "ended"):
+        render_key_moments(game, probs, names)
+    with st.expander("🔎 Turn review — scrub back through the battle",
+                     expanded=live.status == "ended"):
+        render_turn_review(lambda t: parse_replay({"log": live.raw_log()}, up_to_turn=t),
+                           game, probs, names, key_prefix="live_rev")
 
 
 def render_live_spectator() -> None:
