@@ -1,12 +1,14 @@
-# Runtime dependencies — also what Streamlit Community Cloud installs to deploy.
-requests>=2.31
-pandas>=2.1
-pyarrow>=15.0        # parquet engine for the processed turn dataset
-PyYAML>=6.0          # config.yaml
-tqdm>=4.66           # progress bars for scrape/parse runs
-scikit-learn>=1.4    # baselines + calibration (Phase 3)
-lightgbm>=4.3        # gradient-boosted win-prob model (Phase 3)
-matplotlib>=3.8      # evaluation plots (reliability diagrams)
-plotly>=5.20         # interactive win-prob timeline in the app
-streamlit>=1.49      # demo app (Phase 4); uses st.fragment for the live panel
-websocket-client>=1.6  # live battle spectating over Showdown's WebSocket (Phase 8)
+# Runtime dependencies, pinned to tested versions for reproducible installs
+# (this is also what Streamlit Community Cloud installs to deploy the app).
+requests==2.32.3
+pandas==2.2.3
+pyarrow==24.0.0        # parquet engine for the processed turn dataset
+PyYAML==6.0.2          # config.yaml
+tqdm==4.67.1           # progress bars for scrape/parse runs
+numpy==2.2.0
+scikit-learn==1.8.0    # baselines, calibration
+lightgbm==4.6.0        # gradient-boosted win-prob model
+matplotlib==3.10.9     # evaluation plots (reliability diagrams)
+plotly==6.8.0          # interactive win-prob timeline in the app
+streamlit==1.58.0      # demo app; uses width="stretch" + st.fragment
+websocket-client==1.8.0  # live battle spectating over Showdown's WebSocket
