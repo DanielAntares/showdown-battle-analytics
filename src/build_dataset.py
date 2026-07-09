@@ -38,6 +38,7 @@ def build() -> None:
             continue  # ties, forfeits before turn 1, or unfinished logs
         snapshots = game.pop("snapshots")
         teams = game.pop("teams")
+        game.pop("events")  # display-time info; not part of the training tables
         game["uploadtime"] = replay.get("uploadtime")
         game_rows.append(game)
         for side, roster in teams.items():

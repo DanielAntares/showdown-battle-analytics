@@ -173,14 +173,14 @@ def render_team_predictor() -> None:
             format="percent", min_value=0, max_value=float(top.relative_likelihood.max()))},
         hide_index=True, width="stretch")
     st.caption("Held-out evaluation: given 3 known members, the top-ranked guess is one "
-               "of the 3 hidden teammates 35% of the time (usage-only baseline: 19%), "
-               "and half the hidden team appears in the top 10.")
+               "of the 3 hidden teammates 41% of the time (usage-only baseline: 18%), "
+               "and 58% of the hidden team appears in the top 10.")
 
 
 st.title("Pokémon Showdown — Win Probability")
 st.caption(
     "Turn-by-turn win probability for ranked Gen 9 OU battles. LightGBM trained on "
-    "~15k rated ladder games; evaluated on strictly newer games (log loss 0.601, AUC 0.73).")
+    "~14k games rated 1300+; evaluated on strictly newer games (log loss 0.608, AUC 0.72).")
 
 tab_replay, tab_team = st.tabs(["📈 Replay analyzer", "🔮 Team predictor"])
 with tab_replay:

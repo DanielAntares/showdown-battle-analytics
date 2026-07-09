@@ -42,15 +42,16 @@ global weather, terrain, Trick Room, turn number, and player Elo ratings.
 
 ## Results
 
-19,208 rated games (June–July 2026, Elo 1100–1949) → 462k turn snapshots. Trained on the
-three older weekly windows, evaluated on 4,606 strictly-newer games (110k turns):
+27,840 rated games collected (June–July 2026) → 686k turn snapshots. Models train on
+**dataset v2**: the 18,744 games rated 1300+ (14.3k train, 4.4k strictly-newer test);
+lower-rated games stay on disk for cross-skill analysis.
 
 | Model | Log loss ↓ | Brier ↓ | AUC ↑ |
 |---|---|---|---|
 | Always 50% | 0.6931 | 0.2500 | 0.500 |
-| Elo difference only | 0.6929 | 0.2499 | 0.508 |
-| Battle-state logistic (6 features) | 0.6252 | 0.2184 | 0.701 |
-| **LightGBM (full snapshot)** | **0.6011** | **0.2085** | **0.734** |
+| Elo difference only | 0.6934 | 0.2501 | 0.497 |
+| Battle-state logistic (6 features) | 0.6330 | 0.2215 | 0.691 |
+| **LightGBM (full snapshot)** | **0.6075** | **0.2112** | **0.725** |
 
 The LightGBM model is trained with **p1/p2 mirror augmentation** (every position is also
 seen from the other seat with the label flipped — doubles the sample and enforces
@@ -60,11 +61,11 @@ symmetry; worth −0.010 log loss on its own) plus turn-momentum and team-health
 
 Three findings worth calling out:
 
-1. **Pre-game Elo is nearly worthless** (log loss 0.6929 vs 0.6931 for a coin flip) —
-   ladder matchmaking pairs similar-rated players, so almost all predictive signal must
-   come from the battle state itself.
+1. **Pre-game Elo is worthless at higher ladder** — on the 1300+ benchmark the Elo-only
+   baseline scores *below* a coin flip (AUC 0.497). Matchmaking equalizes skill so
+   thoroughly that all predictive signal must come from the battle state itself.
 2. **The model reads matchups, not just scoreboards**: the two active-species features
-   carry 47% of total split gain, ahead of the HP differential (27%) — the model has
+   carry 44% of total split gain, alongside the HP differential (27%) — the model has
    effectively learned type/threat matchup knowledge from co-occurrence with outcomes.
 3. **Uncertainty behaves like it should**: log loss falls from 0.68 in turns 1–5 toward
    0.55 late-game, and the reliability curves track the diagonal — a predicted 70% wins
@@ -80,15 +81,15 @@ Three findings worth calling out:
 
 The second model answers the hidden-information question: **given k known members of a
 team, which species are the other 6−k?** A smoothed co-occurrence naive Bayes, fit on
-29,188 training rosters and evaluated on 9,207 strictly-newer test teams (~540 candidate
+28,607 training rosters and evaluated on 8,874 strictly-newer test teams (~500 candidate
 species per guess):
 
 | Members revealed | Top-1 hit rate | Recall@10 | Usage-baseline top-1 |
 |---|---|---|---|
-| 1 | 32.8% | 35.3% | 26.7% |
-| 2 | 34.7% | 43.6% | 23.2% |
-| 3 | 35.4% | 49.6% | 18.5% |
-| 4 | 33.0% | 53.9% | 13.4% |
+| 1 | 36.3% | 40.7% | 26.6% |
+| 2 | 40.0% | 51.2% | 22.6% |
+| 3 | 41.1% | 57.7% | 17.9% |
+| 4 | 38.6% | 63.0% | 12.9% |
 
 Note the crossing dynamics: the usage-only baseline *degrades* as more is revealed
 (the popular picks get used up), while the model *improves* — evidence it reads team
@@ -120,8 +121,8 @@ likely hidden teammates, ranked with relative likelihoods.
       via co-occurrence naive Bayes over training rosters; Team Predictor tab in the app
 - [x] **Phase 6 — turn stories**: per-turn action tracking (moves, switches, faints, Tera)
       with luck events (crits, misses) separated, swing-severity grading in key moments
-- [ ] **Phase 7 — dataset v2**: 25–30k games at a 1300+ rating floor (train filter
-      `train_min_rating` keeps older low-Elo games on disk for skill-band analysis)
+- [x] **Phase 7 — dataset v2**: 27.8k games collected, 18.7k at the 1300+ training floor
+      (train filter `train_min_rating` keeps low-Elo games on disk for skill-band analysis)
 - [ ] **Phase 8 — live spectator mode**: attach to an ongoing public battle over
       Showdown's WebSocket and stream the win-prob chart in real time — the live protocol
       is identical to replay logs, and the parser is already incremental (`feed()` per line)
