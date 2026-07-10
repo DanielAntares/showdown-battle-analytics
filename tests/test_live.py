@@ -19,6 +19,13 @@ def test_normalize_room_private_suffix():
     assert normalize_room("battle-gen9ou-123-abcxyz") == "battle-gen9ou-123-abcxyz"
 
 
+def test_normalize_room_preserves_suffix_case():
+    """Regression: private-battle secret suffixes are case-sensitive; lowercasing
+    them made the server reject the join with 'room not found'."""
+    link = "https://play.pokemonshowdown.com/battle-gen9ou-2646871289-81P0yA8eYnt80J4e"
+    assert normalize_room(link) == "battle-gen9ou-2646871289-81P0yA8eYnt80J4e"
+
+
 def test_normalize_room_rejects_junk():
     with pytest.raises(ValueError):
         normalize_room("not a battle link")

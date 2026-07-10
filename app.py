@@ -411,8 +411,11 @@ def _start_live(ref: str) -> None:
         with st.spinner(f"looking up {ref}'s current battle…"):
             room = find_user_battle(ref)
         if room is None:
-            st.error(f"Couldn't find a public battle for '{ref}' — are they "
-                     "currently playing, with battles visible?")
+            st.error(f"Couldn't find a public battle for '{ref}'. Either they aren't "
+                     "in a battle right now, or the battle is hidden/private — hidden "
+                     "battles can't be found by username. If it's your own private "
+                     "game, paste the full battle link from your browser instead "
+                     "(including the secret suffix after the battle number).")
             return
     if not room:
         return

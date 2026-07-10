@@ -21,8 +21,13 @@ WS_URL = "wss://sim3.psim.us/showdown/websocket"
 
 
 def normalize_room(ref: str) -> str:
-    """URL, room id, or '>room' line -> canonical room id."""
-    m = re.search(r"battle-[a-z0-9]+-\d+(-[a-z0-9]+)?", ref.strip().lower())
+    """URL, room id, or '>room' line -> canonical room id.
+
+    Private battles carry a case-SENSITIVE secret suffix
+    (battle-gen9ou-123-AbC09xYz…), so match case-sensitively first and only
+    fall back to lowercasing the whole ref when that fails."""
+    pattern = r"battle-[a-z0-9]+-\d+(-[A-Za-z0-9]+)?"
+    m = re.search(pattern, ref.strip()) or re.search(pattern, ref.strip().lower())
     if not m:
         raise ValueError(f"no battle room id in {ref!r}")
     return m.group(0)
@@ -128,7 +133,10 @@ class LiveBattle:
                         self.status = "ended"
                     elif line.startswith("|noinit|"):
                         self.status = "error"
-                        self.error = "room not found (battle over or private)"
+                        self.error = (
+                            "room not found — the battle has ended, or it's private. "
+                            "For a private battle, paste the FULL link including its "
+                            "secret suffix (its letters are case-sensitive).")
                     self.log.append(line)
                     self.parser.feed(line)
 
