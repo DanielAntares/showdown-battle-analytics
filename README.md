@@ -148,6 +148,12 @@ yet**: unrevealed moves and EV/nature spreads are predicted from ladder usage st
 so the advisor evaluates a Clodsire's likely Earthquake even when only its Toxic has
 been revealed. The panel shows the predicted sets it's assuming.
 
+It also recommends **which Pokémon to lead with**: at team preview both full teams are
+known, so each of your six is scored as the lead against all six of the opponent's
+possible leads, and the pick with the best average opening wins. This shows up
+retrospectively in the replay analyzer ("who should have started?") and live at team
+preview, before you've chosen.
+
 Launch on Windows with `run.bat`, or `python -m streamlit run app.py` (use `python -m`;
 a bare `streamlit` may resolve to a different install).
 

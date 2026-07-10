@@ -5,7 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from src.advisor import SimState, advise_search, hazard_chip, player_actions
+from src.advisor import (SimState, advise_search, hazard_chip, player_actions,
+                         recommend_lead)
 from src.parser import parse_replay
 from src.pokedex import move_info
 
@@ -89,6 +90,19 @@ def test_snapshot_features_handles_mixed_screen_dtype():
     X = snapshot_features({**game, "snapshots": [a, b]}, meta)
     assert len(X) == 2
     booster.predict(X)  # must not raise on the mixed-dtype column
+
+
+def test_recommend_lead_ranks_full_team():
+    from src.predict import load_model, snapshot_features
+    booster, meta = load_model()
+    game = parse_replay(json.loads(FIXTURES[0].read_text(encoding="utf-8")))
+    for side in ("p1", "p2"):
+        rec = recommend_lead(game, side, booster, meta, snapshot_features)
+        assert set(rec.lead) == set(game["teams"][side])  # every team member ranked
+        assert rec.average.between(0, 1).all()
+        assert (rec.worst_case <= rec.average + 1e-9).all()
+        # ranked best-average first
+        assert list(rec.average) == sorted(rec.average, reverse=True)
 
 
 def test_advise_search_on_fixture():

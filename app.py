@@ -11,7 +11,7 @@ import plotly.graph_objects as go
 import requests
 import streamlit as st
 
-from src.advisor import advise_search
+from src.advisor import advise_search, recommend_lead
 from src.common import ROOT
 from src.movesets import moveset_with_probs, predict_spread, species_set
 from src.live import LiveBattle, find_user_battle, list_battles
@@ -115,6 +115,32 @@ def predicted_set_md(species: str, revealed=()) -> str:
     return (f"**{species}** — likely {item}, {ability}, Tera {tera}  \n"
             f"Moves: {' · '.join(move_lines)}  \n"
             f"Spread: {nat} {evs}{atk_iv}")
+
+
+def render_lead_suggestion(game: dict, names: dict) -> None:
+    """Which Pokémon each side should start with, given both full teams."""
+    booster, meta = cached_model()
+    cols = st.columns(2)
+    for col, side in zip(cols, ("p1", "p2")):
+        rec = recommend_lead(game, side, booster, meta, snapshot_features)
+        if not len(rec):
+            continue
+        actual = (game["snapshots"][0][f"{side}_active_species"]
+                  if game.get("snapshots") else None)
+        best = rec.iloc[0].lead
+        note = ""
+        if actual:
+            note = ("  \n✅ led the recommended pick" if actual == best
+                    else f"  \n(actually led **{actual}**)")
+        col.markdown(f"**{names[side]}** → lead **{best}**{note}")
+        show = rec.assign(average=lambda d: d.average.map("{:.0%}".format),
+                          worst_case=lambda d: d.worst_case.map("{:.0%}".format))
+        show = show.rename(columns={"lead": "Lead", "average": "avg win%",
+                                    "worst_case": "worst%", "worst_vs": "worst vs"})
+        col.dataframe(show, hide_index=True, width="stretch")
+    st.caption("Best lead = highest average win probability across the opponent's six "
+               "possible leads (the opening matchup scored by the win-prob model). It "
+               "assumes any of their team could lead; 'worst vs' is the reply it fears most.")
 
 
 def render_key_moments(game: dict, probs, names: dict) -> None:
@@ -289,6 +315,9 @@ def render_replay_analyzer() -> None:
         t1.markdown(f"**{p1}**\n\n" + "\n".join(f"- {s}" for s in game["teams"]["p1"]))
         t2.markdown(f"**{p2}**\n\n" + "\n".join(f"- {s}" for s in game["teams"]["p2"]))
 
+    with st.expander("🚀 Lead suggestion — who should have started?"):
+        render_lead_suggestion(game, names)
+
     with st.expander("🔎 Turn review — prediction, actions, and the advisor at any turn"):
         render_turn_review(lambda t: parse_replay(fetch_raw(ref), up_to_turn=t),
                            game, probs, names, key_prefix="replay_rev")
@@ -366,7 +395,11 @@ def live_panel() -> None:
     if live.status == "disconnected":
         st.warning("Disconnected after repeated retries. Press Stop and try again.")
     if game["n_turns"] < 1:
-        st.info("Connected — waiting for the first turn…")
+        if game["teams"]["p1"] and game["teams"]["p2"]:
+            st.info("Team preview — no turns yet. Recommended leads:")
+            render_lead_suggestion(game, {"p1": p1, "p2": p2})
+        else:
+            st.info("Connected — waiting for team preview…")
         return
     if "OU" not in (game["format"] or "OU"):
         st.warning(f"This looks like {game['format']}, not Gen 9 OU — the model was "

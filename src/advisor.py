@@ -239,3 +239,42 @@ def advise_search(game: dict, side: str, booster, meta, snapshot_features) -> pd
                      "worst_response": theirs[worst_j]["label"]})
     return pd.DataFrame(rows).sort_values("worst_case", ascending=False,
                                           ignore_index=True)
+
+
+def _opening_snapshot(n_mine: int, n_opp: int) -> dict:
+    """A fresh turn-1 board (both teams full, nothing revealed but the leads)."""
+    s = {"turn": 1, "p1_active_species": "", "p2_active_species": "",
+         "p1_active_hp": 1.0, "p2_active_hp": 1.0,
+         "p1_active_status": "", "p2_active_status": "",
+         "p1_hp_total": float(n_mine), "p2_hp_total": float(n_opp),
+         "p1_fainted": 0, "p2_fainted": 0, "p1_revealed": 1, "p2_revealed": 1,
+         "p1_healthy": n_mine, "p2_healthy": n_opp, "p1_statused": 0, "p2_statused": 0,
+         "p1_moves_revealed": 0, "p2_moves_revealed": 0,
+         "p1_tera_used": False, "p2_tera_used": False,
+         "weather": "", "terrain": "", "trickroom": False}
+    return s
+
+
+def recommend_lead(game: dict, side: str, booster, meta, snapshot_features) -> pd.DataFrame:
+    """Rank `side`'s six Pokémon as the opening lead. Each candidate is scored by
+    the win-prob model on the full-team opening matchup against every one of the
+    opponent's possible leads; the recommendation has the best *average* opening
+    (you don't know which lead the opponent picks)."""
+    opp = "p2" if side == "p1" else "p1"
+    my_team, opp_team = game["teams"][side], game["teams"][opp]
+    if not my_team or not opp_team:
+        return pd.DataFrame(columns=["lead", "average", "worst_case", "worst_vs"])
+    base = _opening_snapshot(len(my_team), len(opp_team))
+    snaps = []
+    for m in my_team:
+        for o in opp_team:
+            snaps.append({**base, f"{side}_active_species": m, f"{opp}_active_species": o})
+    p1_win = calibrate(booster.predict(snapshot_features({**game, "snapshots": snaps}, meta)), meta)
+    mine = np.asarray(p1_win if side == "p1" else 1 - p1_win).reshape(len(my_team), len(opp_team))
+
+    rows = []
+    for i, m in enumerate(my_team):
+        j = int(mine[i].argmin())
+        rows.append({"lead": m, "average": float(mine[i].mean()),
+                     "worst_case": float(mine[i, j]), "worst_vs": opp_team[j]})
+    return pd.DataFrame(rows).sort_values("average", ascending=False, ignore_index=True)
