@@ -17,8 +17,11 @@ import numpy as np
 import pandas as pd
 
 from src.movesets import predict_moves, real_stats
-from src.pokedex import effectiveness, lookup, move_info
+from src.pokedex import effectiveness, lookup, move_info, norm_name
 from src.predict import calibrate
+
+# priority attacks that fail outright unless the target chose an attacking move
+FAILS_VS_NONATTACK = {"suckerpunch", "thunderclap"}
 
 BOOST_STATS = ("atk", "def", "spa", "spd", "spe")
 HAZARDS = ("stealthrock", "spikes", "toxicspikes", "stickyweb")
@@ -119,6 +122,15 @@ class SimState:
         opp = self.active[opp_side]
         if me.fainted:
             return
+        if norm_name(move.get("name", "")) == "rest":
+            # full heal at the cost of sleeping; fails (pure no-op) at full HP
+            if me.hp < 0.999:
+                self.snap[f"{side}_hp_total"] += 1.0 - me.hp
+                me.hp = 1.0
+                if not me.status:
+                    self.snap[f"{side}_statused"] += 1
+                me.status = "slp"
+            return
         if move["category"] != "Status" and move["power"] > 0:
             frac = self.damage_fraction(side, move)
             dealt = min(frac, opp.hp)
@@ -151,6 +163,10 @@ class SimState:
     def resolve(self, actions: dict) -> None:
         """Play one turn: switches first, then moves by priority and speed."""
         movers = []
+        attacking = {side: act["kind"] == "move"
+                     and act["move"].get("category") != "Status"
+                     and act["move"].get("power", 0) > 0
+                     for side, act in actions.items()}
         for side, act in actions.items():
             if act["kind"] == "switch":
                 self.switch(side, act["mon"])
@@ -160,6 +176,9 @@ class SimState:
         movers.sort(key=lambda m: (m[1].get("priority", 0),
                                    trick_room * self.speed(m[0])), reverse=True)
         for side, move in movers:
+            if (norm_name(move.get("name", "")) in FAILS_VS_NONATTACK
+                    and not attacking.get(self._opp(side))):
+                continue  # Sucker Punch-likes whiff when the target isn't attacking
             self.use_move(side, move)
 
     def to_snapshot(self) -> dict:
@@ -185,21 +204,50 @@ def _typical_moves(species: str) -> list[dict]:
              "power": 80, "accuracy": 1.0, "priority": 0} for t in dex["types"]]
 
 
-def moves_for(mon: dict) -> list[dict]:
-    """The moves to evaluate for a Pokémon: its revealed moves plus the most
-    likely unrevealed ones (from usage stats), filling up to four. This is what
-    lets the advisor reason about a move a Pokémon hasn't shown yet."""
+def moves_for(mon: dict, snap: dict | None = None, side: str | None = None) -> list[dict]:
+    """The moves to evaluate for a Pokémon: revealed plus likely-unrevealed ones
+    (usage stats), then filtered for legality (Encore/Taunt/Choice lock) and
+    obvious no-ops (healing at full HP, stacking a maxed hazard/screen)."""
     names = predict_moves(mon["species"], revealed=mon.get("moves", ()), k=4)
     moves = [dict(move_info(n), name=move_info(n)["name"]) for n in names if move_info(n)]
-    return moves or _typical_moves(mon["species"])
+    if not moves:
+        return _typical_moves(mon["species"])
+
+    volatiles = set(mon.get("volatiles", ()))
+    last = norm_name(mon.get("last_move", ""))
+    if "encore" in volatiles and last:  # locked into repeating the encored move
+        locked = [m for m in moves if norm_name(m["name"]) == last]
+        moves = locked or moves
+    if "taunt" in volatiles:
+        moves = [m for m in moves if m["category"] != "Status"] or moves
+    if norm_name(mon.get("item", "")).startswith("choice") and last:
+        locked = [m for m in moves if norm_name(m["name"]) == last]
+        moves = locked or moves
+
+    if snap is not None and side is not None:
+        opp = "p2" if side == "p1" else "p1"
+        useful = []
+        for m in moves:
+            n = norm_name(m["name"])
+            if (m.get("heal") or n == "rest") and mon["hp"] >= 0.99:
+                continue  # healing at full HP fails / does nothing
+            sc = m.get("side_condition")
+            if sc in HAZARD_MAX and snap[f"{opp}_hazard_{sc}"] >= HAZARD_MAX[sc]:
+                continue  # hazard already at max layers
+            if sc in SCREENS and snap[f"{side}_screen_{sc}"]:
+                continue  # screen already up
+            useful.append(m)
+        moves = useful or moves
+    return moves
 
 
 def player_actions(game: dict, side: str) -> list[dict]:
     roster = game["roster"][side]
+    snap = game["snapshots"][-1] if game.get("snapshots") else None
     me = next((m for m in roster if m["active"]), None)
     acts = []
     if me and not me["fainted"]:
-        for move in moves_for(me):
+        for move in moves_for(me, snap, side):
             acts.append({"kind": "move", "label": move["name"], "move": move})
     for mon in roster:
         if not mon["fainted"] and not mon["active"] and mon["hp"] > 0:

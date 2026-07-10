@@ -92,6 +92,66 @@ def test_snapshot_features_handles_mixed_screen_dtype():
     booster.predict(X)  # must not raise on the mixed-dtype column
 
 
+def test_sucker_punch_fails_vs_status_move():
+    game, snap = _sim_1v1("Kingambit", "Dondozo")
+    sim = SimState(game, snap)
+    sucker = dict(move_info("Sucker Punch"), name="Sucker Punch")
+    curse = dict(move_info("Curse"), name="Curse")
+    sim.resolve({"p1": {"kind": "move", "move": sucker},
+                 "p2": {"kind": "move", "move": curse}})
+    assert sim.active["p2"].hp == 1.0  # whiffed: target wasn't attacking
+    # ...but it works normally when the target attacks
+    sim2 = SimState(*_sim_1v1("Kingambit", "Dondozo"))
+    press = dict(move_info("Body Press"), name="Body Press")
+    sim2.resolve({"p1": {"kind": "move", "move": sucker},
+                  "p2": {"kind": "move", "move": press}})
+    assert sim2.active["p2"].hp < 1.0
+
+
+def test_rest_heals_but_sleeps_and_fails_at_full():
+    game, snap = _sim_1v1("Dondozo", "Kingambit")
+    sim = SimState(game, snap)
+    rest = dict(move_info("Rest"), name="Rest")
+    sim.use_move("p1", rest)  # full HP: no-op, no sleep
+    assert sim.active["p1"].hp == 1.0 and sim.active["p1"].status == ""
+    sim.active["p1"].hp = 0.3
+    sim.use_move("p1", rest)
+    assert sim.active["p1"].hp == 1.0 and sim.active["p1"].status == "slp"
+
+
+def _mon(species, **kw):
+    base = {"species": species, "hp": 1.0, "status": "", "fainted": False,
+            "active": True, "moves": [], "item": "", "volatiles": [], "last_move": ""}
+    return {**base, **kw}
+
+
+def test_move_legality_filters():
+    from src.advisor import moves_for
+    # Choice lock: only the last-used move remains
+    locked = moves_for(_mon("Kyurem", item="choicespecs", last_move="Ice Beam",
+                            moves=["Ice Beam", "Draco Meteor"]))
+    assert [m["name"] for m in locked] == ["Ice Beam"]
+    # Encore: same behavior via volatile
+    encored = moves_for(_mon("Gholdengo", volatiles=["encore"], last_move="Nasty Plot",
+                             moves=["Nasty Plot", "Shadow Ball"]))
+    assert [m["name"] for m in encored] == ["Nasty Plot"]
+    # Taunt: status moves dropped
+    taunted = moves_for(_mon("Gholdengo", volatiles=["taunt"],
+                             moves=["Nasty Plot", "Recover", "Shadow Ball"]))
+    assert all(m["category"] != "Status" for m in taunted)
+
+
+def test_useless_moves_pruned():
+    from src.advisor import moves_for
+    game, snap = _sim_1v1("Dondozo", "Kingambit")
+    dozo = _mon("Dondozo", moves=["Rest", "Curse", "Body Press", "Sleep Talk"])
+    names = [m["name"] for m in moves_for(dozo, snap, "p1")]
+    assert "Rest" not in names  # full HP: Rest would fail
+    dozo["hp"] = 0.4
+    names = [m["name"] for m in moves_for(dozo, snap, "p1")]
+    assert "Rest" in names  # hurt: Rest is a real option again
+
+
 def test_recommend_lead_ranks_full_team():
     from src.predict import load_model, snapshot_features
     booster, meta = load_model()

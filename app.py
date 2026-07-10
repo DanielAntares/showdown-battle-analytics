@@ -466,6 +466,14 @@ def live_panel() -> None:
         st.success(f"Battle over — {game[game['winner'] + '_name']} won. "
                    "Use the panels below to review what decided it.")
     names = {"p1": p1, "p2": p2}
+    fainted_active = [s for s in ("p1", "p2") if any(
+        m["active"] and m["fainted"] for m in game["roster"][s])]
+    forced = bool(fainted_active) and live.status == "live"
+    with st.expander("🧠 Advisor — right now (live state)", expanded=forced):
+        if forced:
+            st.warning(f"💀 {', '.join(names[s] for s in fainted_active)} must pick a "
+                       "replacement — the ranked switch-ins are below.")
+        render_advisor(game, names, key_prefix="live_now")
     with st.expander("📌 Key moments so far", expanded=live.status == "ended"):
         render_key_moments(game, probs, names)
     with st.expander("🔎 Turn review — scrub back through the battle",

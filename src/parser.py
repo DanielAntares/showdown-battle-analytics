@@ -44,6 +44,8 @@ class Side:
     boosts: dict = field(default_factory=lambda: {s: 0 for s in BOOST_STATS})
     hazards: dict = field(default_factory=lambda: {h: 0 for h in HAZARD_MAX})
     screens: set = field(default_factory=set)
+    volatiles: set = field(default_factory=set)  # encore/taunt/... on the active
+    last_move: str = ""  # last move the active used since switching in
 
     def active_mon(self) -> Pokemon | None:
         return self.team.get(self.active)
@@ -133,6 +135,8 @@ class BattleParser:
             mon.status = status
         side.active = key
         side.boosts = {s: 0 for s in BOOST_STATS}  # switching clears boosts
+        side.volatiles = set()  # ... and volatile states / move locks
+        side.last_move = ""
 
     def _handle_replace(self, ident: str, details: str) -> None:
         """Zoroark's Illusion drops: the nickname's true species is revealed."""
@@ -186,6 +190,7 @@ class BattleParser:
             if mon := self._mon(p[2]):
                 mon.revealed = True
                 mon.moves.add(p[3])
+                self.sides[_side_of(p[2])].last_move = p[3]
                 self._event(_side_of(p[2]), f"{mon.species} used {p[3]}")
         elif cmd in ("-damage", "-heal", "-sethp"):
             if mon := self._mon(p[2]):
@@ -204,6 +209,10 @@ class BattleParser:
         elif cmd == "-miss":
             if mon := self._mon(p[2]):
                 self._event(_side_of(p[2]), f"{mon.species}'s attack missed", luck=True)
+        elif cmd == "-start":
+            self.sides[_side_of(p[2])].volatiles.add(_norm_condition(p[3]))
+        elif cmd == "-end":
+            self.sides[_side_of(p[2])].volatiles.discard(_norm_condition(p[3]))
         elif cmd in ("-item", "-enditem"):
             if mon := self._mon(p[2]):
                 mon.item = p[3]  # item name; revealed by Knock Off, Boots proc, etc.
@@ -310,7 +319,9 @@ def game_state(parser: BattleParser, id: str | None = None,
             sid: [{"species": m.species, "hp": m.hp, "status": m.status,
                    "fainted": m.fainted, "revealed": m.revealed,
                    "active": key == side.active, "moves": sorted(m.moves),
-                   "item": m.item, "ability": m.ability}
+                   "item": m.item, "ability": m.ability,
+                   "volatiles": sorted(side.volatiles) if key == side.active else [],
+                   "last_move": side.last_move if key == side.active else ""}
                   for key, m in side.team.items()]
             for sid, side in parser.sides.items()
         },
