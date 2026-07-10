@@ -134,6 +134,9 @@ conditioned on the specific team — only on what the battle has revealed.)
 - the model's verdict: final read on the actual winner and the turn from which it
   called the game without flipping again
 
+You can paste a replay URL, pick a random one by Elo band, or **search a username** to
+browse that player's uploaded replays (battle history) and click one to analyze it.
+
 Plus a **Live spectator** tab — paste a battle link or a username (or grab the
 top-rated game on the ladder right now) and watch the win-probability chart update
 in real time as the battle is played — and a **Team Predictor** tab: pick 1–5 known

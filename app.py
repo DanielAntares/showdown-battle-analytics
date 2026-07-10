@@ -5,6 +5,7 @@ Run with:
 """
 
 import random
+import time
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -17,7 +18,7 @@ from src.movesets import moveset_with_probs, predict_spread, species_set
 from src.live import LiveBattle, find_user_battle, list_battles
 from src.parser import parse_replay
 from src.predict import (actions_by_turn, fetch_replay, key_moments, load_model,
-                         predict_game, snapshot_features, turn_story)
+                         predict_game, snapshot_features, turn_story, user_replays)
 from src.teammates import TeammateModel
 
 # chart chrome + series colors from the validated reference palette (dataviz skill)
@@ -263,6 +264,49 @@ def pick_band_example():
         st.session_state.replay_ref = pool.id.sample(1).iloc[0]
 
 
+@st.cache_data(ttl=300, show_spinner=False)
+def cached_user_replays(username: str) -> list:
+    return user_replays(username)
+
+
+def _ago(uploadtime: int) -> str:
+    secs = max(0, int(time.time()) - int(uploadtime))
+    for unit, n in (("d", 86400), ("h", 3600), ("m", 60)):
+        if secs >= n:
+            return f"{secs // n}{unit} ago"
+    return "just now"
+
+
+def pick_history_replay(replay_id: str):
+    st.session_state.replay_ref = replay_id
+
+
+def render_history_browser() -> None:
+    st.text_input("Showdown username", key="history_user",
+                  placeholder="search your uploaded replays")
+    if st.button("Find replays") and st.session_state.get("history_user", "").strip():
+        st.session_state.history_query = st.session_state.history_user.strip()
+    query = st.session_state.get("history_query")
+    if not query:
+        return
+    try:
+        reps = cached_user_replays(query)
+    except requests.HTTPError:
+        st.error("Couldn't reach the replay server — try again in a moment.")
+        return
+    if not reps:
+        st.caption(f"No public replays found for **{query}**. Only replays that were "
+                   "uploaded (“Upload and share replay” after a game) are searchable.")
+        return
+    st.caption(f"{len(reps)} uploaded replays for **{query}** — click one to analyze:")
+    for r in reps[:30]:
+        p1, p2 = (r.get("players") or ["?", "?"])[:2]
+        rating = f"{r['rating']}" if r.get("rating") else "unrated"
+        label = f"{p1} vs {p2}  ·  {rating}  ·  {_ago(r['uploadtime'])}"
+        st.button(label, key=f"hist_{r['id']}", width="stretch",
+                  on_click=pick_history_replay, args=(r["id"],))
+
+
 def render_replay_analyzer() -> None:
     st.text_input("Replay URL or ID", key="replay_ref",
                   placeholder="https://replay.pokemonshowdown.com/gen9ou-...")
@@ -274,6 +318,9 @@ def render_replay_analyzer() -> None:
                   help="Compare how chaotic low-ladder games look vs high-ladder ones")
     else:
         st.button("Try an example replay", on_click=set_example)
+
+    with st.expander("🗂️ Battle history — find a replay by username"):
+        render_history_browser()
 
     ref = st.session_state.get("replay_ref", "").strip()
     if not ref:

@@ -10,6 +10,7 @@ Usage (smoke test):
 """
 
 import json
+import re
 import sys
 
 import lightgbm as lgb
@@ -24,6 +25,25 @@ from src.parser import parse_replay
 MODEL_PATH = ROOT / "models" / "winprob_lgbm.txt"
 META_PATH = ROOT / "models" / "feature_meta.json"
 REPLAY_URL = "https://replay.pokemonshowdown.com/{id}.json"
+REPLAY_SEARCH = "https://replay.pokemonshowdown.com/search.json"
+
+
+def user_replays(username: str, format_id: str | None = None) -> list[dict]:
+    """A player's public (uploaded) replays, newest first — their battle history.
+
+    Only replays the player uploaded are searchable; unshared ladder games aren't
+    exposed by any public API.
+    """
+    uid = re.sub(r"[^a-z0-9]", "", username.lower())
+    if not uid:
+        return []
+    params = {"user": uid}
+    if format_id:
+        params["format"] = format_id
+    resp = requests.get(REPLAY_SEARCH, params=params, timeout=30)
+    resp.raise_for_status()
+    data = resp.json()
+    return data if isinstance(data, list) else []
 
 
 def load_model() -> tuple[lgb.Booster, dict]:
