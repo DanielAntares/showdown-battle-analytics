@@ -147,6 +147,7 @@ def render_turn_review(state_at, game: dict, probs, names: dict, key_prefix: str
     c1, c2 = st.columns(2)
     c1.metric(f"P({names['p1']} wins) at turn {turn} start", f"{p_before:.0%}",
               f"{delta:+.0%} over this turn" if delta is not None else None)
+    c1.caption(confidence_cue(p_before, turn))
     story = turn_story(game, turn)
     played = [f"**{names[s]}**: {'; '.join(story[s])}" for s in ("p1", "p2") if story[s]]
     if story["luck"]:
@@ -200,6 +201,20 @@ def called_from_turn(game: dict, probs) -> int | None:
     last_wrong = right_side[~right_side].index[-1]
     later = [t for t in probs.index if t > last_wrong]
     return int(later[0]) if later else None
+
+
+def confidence_cue(prob: float, turn: int) -> str:
+    """A rough, honest confidence read: the model measurably firms up as a game
+    progresses (turn-1–5 accuracy ~57% → ~72% late) and as the position gets
+    lopsided. Combine phase and decisiveness into a qualitative label."""
+    decisiveness = abs(prob - 0.5) * 2      # 0 (coin flip) … 1 (near-certain)
+    phase = min(turn / 20, 1.0)
+    score = 0.5 * decisiveness + 0.5 * phase
+    if score > 0.6:
+        return "🟢 high confidence"
+    if score > 0.35:
+        return "🟡 moderate confidence"
+    return "🔴 low confidence — early / close game, treat as a coin-flip-ish read"
 
 
 def set_example():
@@ -339,21 +354,30 @@ def live_panel() -> None:
     if live is None:
         return
     game = live.snapshot_game()
-    icon = {"live": "🔴", "ended": "🏁", "connecting": "⏳"}.get(live.status, "⚠️")
+    icon = {"live": "🔴", "ended": "🏁", "connecting": "⏳",
+            "reconnecting": "🔄", "disconnected": "⚠️"}.get(live.status, "⚠️")
     p1, p2 = game["p1_name"] or "p1", game["p2_name"] or "p2"
     st.caption(f"{icon} {live.status} · `{live.room}` · {p1} vs {p2}")
     if live.status == "error":
-        st.error(live.error)
+        st.error(live.error or "connection error")
         return
+    if live.status == "reconnecting":
+        st.warning("Connection dropped — reconnecting…")
+    if live.status == "disconnected":
+        st.warning("Disconnected after repeated retries. Press Stop and try again.")
     if game["n_turns"] < 1:
         st.info("Connected — waiting for the first turn…")
         return
+    if "OU" not in (game["format"] or "OU"):
+        st.warning(f"This looks like {game['format']}, not Gen 9 OU — the model was "
+                   "trained on OU, so predictions here are unreliable.")
     booster, meta = cached_model()
     probs = predict_game(game, booster, meta)
     c1, c2 = st.columns(2)
     delta = f"{probs.iloc[-1] - probs.iloc[-2]:+.0%} last turn" if len(probs) > 1 else None
     c1.metric(f"P({p1} wins) right now", f"{probs.iloc[-1]:.0%}", delta)
     c2.metric("Turn", game["n_turns"])
+    st.caption(confidence_cue(probs.iloc[-1], game["n_turns"]))
     st.plotly_chart(winprob_figure(game, probs), width="stretch")
     if live.status == "ended" and game["winner"]:
         st.success(f"Battle over — {game[game['winner'] + '_name']} won. "
@@ -397,7 +421,7 @@ def render_live_spectator() -> None:
 st.title("Pokémon Showdown — Win Probability")
 st.caption(
     "Turn-by-turn win probability for ranked Gen 9 OU battles. LightGBM trained on "
-    "~14k games rated 1300+; evaluated on strictly newer games (log loss 0.608, AUC 0.72).")
+    "~14k games rated 1300+; evaluated on strictly newer games (log loss 0.609, AUC 0.72).")
 
 tab_replay, tab_live, tab_team = st.tabs(
     ["📈 Replay analyzer", "🔴 Live spectator", "🔮 Team predictor"])

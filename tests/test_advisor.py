@@ -76,6 +76,21 @@ def test_faster_ko_cancels_slower_move():
         assert sim.snap["p1_hp_total"] == snap_before
 
 
+def test_snapshot_features_handles_mixed_screen_dtype():
+    """Regression: the advisor scores a whole action matrix in one batch, so a
+    screen column can hold both bool (unchanged) and int (a screen was set). That
+    mix must still coerce to numeric for LightGBM."""
+    from src.predict import load_model, snapshot_features
+    booster, meta = load_model()
+    game = parse_replay(json.loads(FIXTURES[0].read_text(encoding="utf-8")), up_to_turn=8)
+    snap = game["snapshots"][-1]
+    a = {**snap, "p1_screen_reflect": True}
+    b = {**snap, "p1_screen_reflect": 1}
+    X = snapshot_features({**game, "snapshots": [a, b]}, meta)
+    assert len(X) == 2
+    booster.predict(X)  # must not raise on the mixed-dtype column
+
+
 def test_advise_search_on_fixture():
     from src.predict import load_model, snapshot_features
     booster, meta = load_model()

@@ -20,6 +20,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from sklearn.calibration import calibration_curve
+from sklearn.isotonic import IsotonicRegression
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import brier_score_loss, log_loss, roc_auc_score
 from sklearn.pipeline import make_pipeline
@@ -45,6 +46,39 @@ def evaluate(name: str, y_true, p) -> dict:
         "brier": brier_score_loss(y_true, p),
         "auc": roc_auc_score(y_true, p),
     }
+
+
+def apply_calibration(p, calibration: dict | None):
+    """Map raw probabilities through the chosen calibrator (identity if None)."""
+    if not calibration:
+        return p
+    return np.interp(p, calibration["x"], calibration["y"])
+
+
+def select_calibration(val_raw, val_y) -> dict | None:
+    """Choose none / Platt / isotonic by log loss on a held-out half of the val
+    fold, so the decision never touches the test set. Returns a lookup table for
+    the winner, or None when the raw model is already best-calibrated."""
+    n = len(val_raw)
+    fit_x, fit_y = val_raw[: n // 2], val_y[: n // 2]
+    sel_x, sel_y = val_raw[n // 2:], val_y[n // 2:]
+    grid = np.linspace(0, 1, 101)
+
+    iso = IsotonicRegression(out_of_bounds="clip", y_min=0.0, y_max=1.0).fit(fit_x, fit_y)
+    platt = LogisticRegression().fit(fit_x.reshape(-1, 1), fit_y)
+    candidates = {
+        "none": None,
+        "isotonic": {"x": grid.tolist(),
+                     "y": np.interp(grid, iso.X_thresholds_, iso.y_thresholds_).tolist()},
+        "platt": {"x": grid.tolist(),
+                  "y": platt.predict_proba(grid.reshape(-1, 1))[:, 1].tolist()},
+    }
+    scores = {name: log_loss(sel_y, apply_calibration(sel_x, cal))
+              for name, cal in candidates.items()}
+    best = min(scores, key=scores.get)
+    print("calibration selection (val-holdout log loss): "
+          + " | ".join(f"{k} {v:.4f}" for k, v in scores.items()) + f"  -> {best}")
+    return candidates[best]
 
 
 def style_axis(ax) -> None:
@@ -150,8 +184,15 @@ def main() -> None:
         eval_metric="binary_logloss",
         callbacks=[lgb.early_stopping(150, verbose=False)],
     )
-    preds["lightgbm"] = model.predict_proba(test[features])[:, 1]
+    raw_test = model.predict_proba(test[features])[:, 1]
     print(f"lightgbm stopped at {model.best_iteration_} trees")
+
+    # calibration: pick a method on a held-out slice of the val fold (never on
+    # test). The raw model turns out already well-calibrated, so this typically
+    # selects "none" — but the comparison keeps the choice honest.
+    val_raw = model.predict_proba(val[features])[:, 1]
+    calibration = select_calibration(val_raw, val.label_p1_win.values)
+    preds["lightgbm"] = apply_calibration(raw_test, calibration)
 
     results = pd.DataFrame([evaluate(n, y_test, p) for n, p in preds.items()])
     print("\n" + results.to_string(index=False, float_format=lambda x: f"{x:.4f}"))
@@ -168,6 +209,7 @@ def main() -> None:
         "features": features,
         "categories": {c: levels[c] for c in CATEGORICAL},
         "best_iteration": model.best_iteration_,
+        "calibration": calibration,  # isotonic breakpoints applied at inference
         "test_metrics": results.set_index("model").loc["lightgbm"].to_dict(),
     }
     (out_dir / "feature_meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")

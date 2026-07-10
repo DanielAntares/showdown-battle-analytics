@@ -225,6 +225,7 @@
       "Gurdurr",
       "Gyarados",
       "Hariyama",
+      "Hatenna",
       "Hatterene",
       "Hattrem",
       "Haunter",
@@ -423,6 +424,7 @@
       "Scrafty",
       "Scream Tail",
       "Scyther",
+      "Seadra",
       "Serperior",
       "Seviper",
       "Shaymin",
@@ -688,6 +690,7 @@
       "Gurdurr",
       "Gyarados",
       "Hariyama",
+      "Hatenna",
       "Hatterene",
       "Hattrem",
       "Haunter",
@@ -886,6 +889,7 @@
       "Scrafty",
       "Scream Tail",
       "Scyther",
+      "Seadra",
       "Serperior",
       "Seviper",
       "Shaymin",
@@ -1018,10 +1022,11 @@
       "psychicterrain"
     ]
   },
-  "best_iteration": 333,
+  "best_iteration": 310,
+  "calibration": null,
   "test_metrics": {
-    "log_loss": 0.6075288701824062,
-    "brier": 0.21119295768023433,
-    "auc": 0.7245470006032938
+    "log_loss": 0.6088526732148206,
+    "brier": 0.21159307785611256,
+    "auc": 0.7233248266553834
   }
 }

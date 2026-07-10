@@ -13,10 +13,12 @@ is used; unrevealed movesets fall back to typical STAB attacks; stats assume
 engine for Showdown's own simulator.
 """
 
+import numpy as np
 import pandas as pd
 
 from src.movesets import predict_moves, real_stats
 from src.pokedex import effectiveness, lookup, move_info
+from src.predict import calibrate
 
 BOOST_STATS = ("atk", "def", "spa", "spd", "spe")
 HAZARDS = ("stealthrock", "spikes", "toxicspikes", "stickyweb")
@@ -216,18 +218,24 @@ def advise_search(game: dict, side: str, booster, meta, snapshot_features) -> pd
     theirs = theirs or [{"kind": "move", "label": "(no options)",
                          "move": {"category": "Status", "power": 0}}]
 
-    rows = []
+    # simulate the whole (my action × their response) matrix, then score every
+    # resulting position in ONE batched model call (much faster than per-cell).
+    snapshots = []
     for a in mine:
-        outcomes = []
         for b in theirs:
             sim = SimState(game, snap)
             sim.resolve({side: a, opp: b})
-            hypo = {**game, "snapshots": [sim.to_snapshot()]}
-            p1_win = float(booster.predict(snapshot_features(hypo, meta))[0])
-            outcomes.append((p1_win if side == "p1" else 1 - p1_win, b["label"]))
-        worst = min(outcomes)
-        rows.append({"action": a["label"], "worst_case": worst[0],
-                     "average": sum(o[0] for o in outcomes) / len(outcomes),
-                     "worst_response": worst[1]})
+            snapshots.append(sim.to_snapshot())
+    p1_win = calibrate(booster.predict(snapshot_features({**game, "snapshots": snapshots},
+                                                         meta)), meta)
+    mine_win = p1_win if side == "p1" else 1 - p1_win
+    grid = np.asarray(mine_win).reshape(len(mine), len(theirs))
+
+    rows = []
+    for i, a in enumerate(mine):
+        worst_j = int(grid[i].argmin())
+        rows.append({"action": a["label"], "worst_case": float(grid[i, worst_j]),
+                     "average": float(grid[i].mean()),
+                     "worst_response": theirs[worst_j]["label"]})
     return pd.DataFrame(rows).sort_values("worst_case", ascending=False,
                                           ignore_index=True)

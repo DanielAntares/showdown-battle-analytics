@@ -23,7 +23,13 @@ CATEGORICAL = [
     "weather",
     "terrain",
 ]
-NOT_FEATURES = ["replay_id", "label_p1_win", "uploadtime"]
+# item/ability reveal counts are parsed (used by the advisor's roster view) but
+# excluded as model features: they were tested and rejected — adding them raised
+# test log loss 0.6089 -> 0.6127 and dropped AUC 0.7233 -> 0.7205 (they largely
+# proxy game progress, which `turn`/HP already capture).
+NOT_FEATURES = ["replay_id", "label_p1_win", "uploadtime",
+                "p1_items_revealed", "p2_items_revealed",
+                "p1_abilities_revealed", "p2_abilities_revealed"]
 
 
 def load_raw() -> pd.DataFrame:

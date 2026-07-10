@@ -46,18 +46,29 @@ def snapshot_features(game: dict, meta: dict) -> pd.DataFrame:
     df["p1_rating"] = game.get("p1_rating") or np.nan
     df["p2_rating"] = game.get("p2_rating") or np.nan
     df = add_derived(df, per_game=False)  # single game: momentum via plain shift
-    for col in df.columns:
-        if df[col].dtype == bool:
-            df[col] = df[col].astype("int8")
+    for col in meta["features"]:  # tolerate older games missing newer feature columns
+        if col not in df:
+            df[col] = 0
     for col in CATEGORICAL:
         df[col] = pd.Categorical(df[col], categories=meta["categories"][col])
+    for col in meta["features"]:  # bool/object (e.g. screens across a mixed batch) -> numeric
+        if col not in CATEGORICAL and df[col].dtype != "float64":
+            df[col] = pd.to_numeric(df[col], errors="coerce").astype("float32")
     return df[meta["features"]]
 
 
+def calibrate(probs, meta: dict):
+    """Apply the isotonic calibration mapping fit at training time (identity if none)."""
+    cal = meta.get("calibration")
+    if not cal:
+        return probs
+    return np.interp(probs, cal["x"], cal["y"])
+
+
 def predict_game(game: dict, booster: lgb.Booster, meta: dict) -> pd.Series:
-    """P(p1 wins) at the start of each turn, indexed by turn number."""
+    """Calibrated P(p1 wins) at the start of each turn, indexed by turn number."""
     features = snapshot_features(game, meta)
-    probs = booster.predict(features)
+    probs = calibrate(booster.predict(features), meta)
     return pd.Series(probs, index=[s["turn"] for s in game["snapshots"]], name="p1_win_prob")
 
 

@@ -1,5 +1,7 @@
 # Pokémon Showdown Win Probability Engine
 
+[![CI](https://github.com/DanielAntares/showdown-battle-analytics/actions/workflows/ci.yml/badge.svg)](https://github.com/DanielAntares/showdown-battle-analytics/actions/workflows/ci.yml)
+
 Turn-by-turn **win probability model** for competitive Pokémon battles — the "ESPN win
 probability chart," but for [Pokémon Showdown](https://pokemonshowdown.com/) ranked ladder
 games. Given the state of a battle at the start of any turn (HP remaining, Pokémon fainted,
@@ -51,13 +53,19 @@ lower-rated games stay on disk for cross-skill analysis.
 | Always 50% | 0.6931 | 0.2500 | 0.500 |
 | Elo difference only | 0.6934 | 0.2501 | 0.497 |
 | Battle-state logistic (6 features) | 0.6330 | 0.2215 | 0.691 |
-| **LightGBM (full snapshot)** | **0.6075** | **0.2112** | **0.725** |
+| **LightGBM (full snapshot)** | **0.6089** | **0.2116** | **0.723** |
 
 The LightGBM model is trained with **p1/p2 mirror augmentation** (every position is also
 seen from the other seat with the label flipped — doubles the sample and enforces
 symmetry; worth −0.010 log loss on its own) plus turn-momentum and team-health features.
 
 ![Calibration and game-phase performance](reports/figures/calibration.png)
+
+Its probabilities are **already well-calibrated without a calibration layer**: fitting
+Platt or isotonic calibration on a validation holdout was tested and both *worsened*
+held-out log loss (raw 0.609 vs Platt 0.611 vs isotonic 0.625), because the raw scores
+are already near the diagonal (left panel) and any layer overfits the train→test time
+gap. The training script keeps the comparison and self-selects "none."
 
 Three findings worth calling out:
 
@@ -70,12 +78,20 @@ Three findings worth calling out:
 3. **Uncertainty behaves like it should**: log loss falls from 0.68 in turns 1–5 toward
    0.55 late-game, and the reliability curves track the diagonal — a predicted 70% wins
    ~70% of the time.
-4. **A negative result, honestly reported**: injecting explicit Pokédex knowledge (base
-   stats of both actives + type-chart advantage) made validation *worse* (0.591 → 0.593),
-   even on rare-species turns. The species categorical features already subsume stats and
-   typing for anything seen in training — domain knowledge only pays when the model
-   couldn't have learned it from data volume alone ([src/pokedex.py](src/pokedex.py) is
-   kept, tested, for future type-reasoning features).
+4. **Negative results, honestly reported.** Two feature ideas were tested and rejected on
+   validation, not quietly kept: (a) explicit Pokédex knowledge (base stats + type-chart
+   advantage) made validation *worse* (0.591 → 0.593), even on rare-species turns — the
+   species categoricals already subsume stats/typing for anything seen in training; and
+   (b) item/ability reveal counts raised test log loss 0.609 → 0.613 and dropped AUC —
+   they mostly proxy game progress, which `turn` and HP already capture. Domain knowledge
+   only pays when the model couldn't have learned it from data volume alone.
+5. **A sequence model didn't beat the snapshot.** A GRU over the turn sequence (numeric
+   features + embeddings for both active species, predicting the winner from every
+   prefix) reached 0.627 test log loss / 0.697 AUC — *worse* than the snapshot LightGBM's
+   0.609 / 0.723 at comparable effort ([src/seq_experiment.py](src/seq_experiment.py)).
+   The likely reason: the hand-built momentum features already hand the tree model the
+   temporal signal that matters, so explicit sequence modeling adds little. (Fair
+   caveats: the GRU trained on a subsample without the mirror augmentation, CPU-only.)
 
 ### Team inference (Phase 5)
 
@@ -135,6 +151,31 @@ been revealed. The panel shows the predicted sets it's assuming.
 Launch on Windows with `run.bat`, or `python -m streamlit run app.py` (use `python -m`;
 a bare `streamlit` may resolve to a different install).
 
+### Is the advisor's advice any good?
+
+The advisor is validated against real player decisions ([src/validate_advisor.py](src/validate_advisor.py)):
+on ~2,800 held-out decision turns we reconstruct what the player saw, ask the advisor for
+its top action, and compare it to what the player actually did.
+
+| Elo band | Agreement with advisor | Win rate when agreeing | Win rate when deviating |
+|---|---|---|---|
+| 1100–1299 | 18% | **63%** | 50% |
+| 1300–1499 | 19% | 51% | 51% |
+| 1500–1699 | 20% | 51% | 51% |
+| 1700+ | 23% | 50% | 50% |
+
+![Advisor agreement by Elo](reports/figures/advisor_validation.png)
+
+Two honest findings. First, **agreement rises with skill** (18% → 23%) — stronger players
+play the advisor's pick more often, evidence the recommendation tracks good play rather
+than being a model artifact. Second, and more striking, **the advisor's edge is
+concentrated at low ladder**: among 1100s, matching it is associated with a 63% win rate
+vs 50% for deviating (a 13-point gap), and that gap closes to nothing by 1700+. That is
+what you'd expect from a genuinely useful coach — it catches the mistakes weaker players
+actually make, while strong players' deviations are informed (hidden info, long-game
+plans) and don't cost them. (These are associations, not causal effects; agreeing also
+correlates with already being in a clearer position.)
+
 ### Does skill change the shape of a game? (Phase 10)
 
 Sampling 600 games per Elo band (using the sub-1300 games kept outside the training
@@ -188,6 +229,13 @@ it's mild (3.1 vs 3.3–4.0 blunder-sized swings per 100 turns). Skill shows up 
 - [x] **Phase 10 — skill-band explorer**: blunder-rate and volatility analysis across
       Elo bands (results above); Elo-band example picker for replays and a minimum-Elo
       filter for live battles in the app
+- [x] **Phase 11 — moveset/spread prediction**: predict a species' likely moves, item,
+      ability, Tera, and EV/nature spread from usage stats ([src/movesets.py](src/movesets.py));
+      feeds the advisor so it reasons about unrevealed moves
+- [x] **Phase 12 — rigor & robustness**: advisor validation against real player decisions
+      ([src/validate_advisor.py](src/validate_advisor.py)), calibration-method selection,
+      a GRU sequence-model experiment ([src/seq_experiment.py](src/seq_experiment.py)),
+      CI on every push, pinned dependencies
 
 ## Known modeling caveats
 
@@ -204,9 +252,12 @@ pip install -r requirements.txt
 python -m src.scrape            # collect replays (resumable; ~1 req/s, be polite)
 python -m src.build_dataset     # parse everything -> data/processed/turns.parquet
 python -m src.train             # baselines + LightGBM -> models/, reports/figures/
-pytest                          # parser tests against bundled real-replay fixtures
+pytest                          # test suite (also run in CI on every push)
 streamlit run app.py            # interactive demo
 ```
+
+Development deps (adds `pytest`) are in `requirements-dev.txt`; CI runs the suite on
+every push via [.github/workflows/ci.yml](.github/workflows/ci.yml).
 
 ## Repository layout
 

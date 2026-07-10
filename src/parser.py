@@ -30,6 +30,8 @@ class Pokemon:
     revealed: bool = False  # actually seen in battle, not just team preview
     tera: str = ""
     moves: set = field(default_factory=set)
+    item: str = ""     # revealed held item ("" = unknown)
+    ability: str = ""  # revealed ability ("" = unknown)
 
 
 @dataclass
@@ -202,6 +204,12 @@ class BattleParser:
         elif cmd == "-miss":
             if mon := self._mon(p[2]):
                 self._event(_side_of(p[2]), f"{mon.species}'s attack missed", luck=True)
+        elif cmd in ("-item", "-enditem"):
+            if mon := self._mon(p[2]):
+                mon.item = p[3]  # item name; revealed by Knock Off, Boots proc, etc.
+        elif cmd == "-ability":
+            if mon := self._mon(p[2]):
+                mon.ability = p[3]
         elif cmd == "-status":
             if mon := self._mon(p[2]):
                 mon.status = p[3]
@@ -265,6 +273,8 @@ class BattleParser:
                     f"{sid}_hp_total": sum(m.hp for m in mons),
                     f"{sid}_healthy": sum(not m.fainted and m.hp >= 0.5 for m in mons),
                     f"{sid}_moves_revealed": sum(len(m.moves) for m in mons),
+                    f"{sid}_items_revealed": sum(bool(m.item) for m in mons),
+                    f"{sid}_abilities_revealed": sum(bool(m.ability) for m in mons),
                     f"{sid}_statused": sum(bool(m.status) and not m.fainted for m in mons),
                     f"{sid}_active_species": active.species if active else "",
                     f"{sid}_active_hp": active.hp if active else 0.0,
@@ -299,7 +309,8 @@ def game_state(parser: BattleParser, id: str | None = None,
         "roster": {
             sid: [{"species": m.species, "hp": m.hp, "status": m.status,
                    "fainted": m.fainted, "revealed": m.revealed,
-                   "active": key == side.active, "moves": sorted(m.moves)}
+                   "active": key == side.active, "moves": sorted(m.moves),
+                   "item": m.item, "ability": m.ability}
                   for key, m in side.team.items()]
             for sid, side in parser.sides.items()
         },
