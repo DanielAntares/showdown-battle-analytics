@@ -95,6 +95,7 @@ class LiveBattle:
         self._ws = None
         self._closed_by_user = False
         self._reconnects = 0
+        self._tried_base = False
         if connect:
             threading.Thread(target=self._run, daemon=True).start()
 
@@ -132,6 +133,16 @@ class LiveBattle:
                     if line.startswith(("|win|", "|tie|")):
                         self.status = "ended"
                     elif line.startswith("|noinit|"):
+                        base = re.match(r"battle-[a-z0-9]+-\d+", self.room).group(0)
+                        if base != self.room and not self._tried_base:
+                            # a player's own URL can carry an access suffix while
+                            # spectators use the base room id — retry without it
+                            self._tried_base = True
+                            self.room = base
+                            self.parser = BattleParser()
+                            self.log = []
+                            ws.send(f"|/join {base}")
+                            continue
                         self.status = "error"
                         self.error = (
                             "room not found — the battle has ended, or it's private. "

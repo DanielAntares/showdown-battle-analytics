@@ -31,6 +31,27 @@ def test_normalize_room_rejects_junk():
         normalize_room("not a battle link")
 
 
+class _FakeWS:
+    def __init__(self):
+        self.sent = []
+
+    def send(self, msg):
+        self.sent.append(msg)
+
+
+def test_noinit_falls_back_to_base_room():
+    """A player's own battle URL can carry an access suffix; if joining with it
+    fails, the client retries the base room id before declaring an error."""
+    lb = LiveBattle("battle-gen9ou-99-SecretAbC123", connect=False)
+    ws = _FakeWS()
+    lb._on_message(ws, ">battle-gen9ou-99-SecretAbC123\n|noinit|nonexistent|x")
+    assert lb.room == "battle-gen9ou-99"
+    assert lb.status != "error"
+    assert ws.sent == ["|/join battle-gen9ou-99"]
+    lb._on_message(ws, ">battle-gen9ou-99\n|noinit|nonexistent|x")
+    assert lb.status == "error"
+
+
 def test_live_log_retention_enables_turn_review():
     lb = LiveBattle("battle-gen9ou-123", connect=False)
     lb._on_message(None, ">battle-gen9ou-123\n|player|p1|Alice||1500\n"
