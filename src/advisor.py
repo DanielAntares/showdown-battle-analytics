@@ -16,17 +16,46 @@ engine for Showdown's own simulator.
 import numpy as np
 import pandas as pd
 
-from src.movesets import predict_moves, real_stats
+from src.movesets import predict_moves, real_stats, species_set
 from src.pokedex import effectiveness, lookup, move_info, norm_name
 from src.predict import calibrate
 
 # priority attacks that fail outright unless the target chose an attacking move
 FAILS_VS_NONATTACK = {"suckerpunch", "thunderclap"}
+# abilities granting outright immunity to a move type
+ABILITY_IMMUNE = {"levitate": "ground", "flashfire": "fire", "wellbakedbody": "fire",
+                  "waterabsorb": "water", "stormdrain": "water", "dryskin": "water",
+                  "voltabsorb": "electric", "lightningrod": "electric",
+                  "motordrive": "electric", "sapsipper": "grass",
+                  "eartheater": "ground"}
+SCREEN_DURATION, FIELD_DURATION = 5, 5
+
+
+def predicted_item(mon: dict) -> str:
+    """Revealed item if known, else the species' most common item on the ladder."""
+    if mon.get("item"):
+        return norm_name(mon["item"])
+    entry = species_set(mon["species"])
+    return entry["item"][0][0] if entry and entry.get("item") else ""
+
+
+def predicted_ability(mon: dict) -> str:
+    if mon.get("ability"):
+        return norm_name(mon["ability"])
+    entry = species_set(mon["species"])
+    return entry["ability"][0][0] if entry and entry.get("ability") else ""
+
+
+def predicted_tera(mon: dict) -> str:
+    if mon.get("tera"):
+        return mon["tera"].lower()
+    entry = species_set(mon["species"])
+    return entry["tera"][0][0] if entry and entry.get("tera") else ""
 
 
 def _grounded(active) -> bool:
-    """Crude groundedness: Flying-types float (Levitate/Boots are hidden info)."""
-    return "flying" not in active.types
+    """Flying-types and Levitate float (Boots/Balloon stay hidden info)."""
+    return "flying" not in active.types and active.ability != "levitate"
 
 BOOST_STATS = ("atk", "def", "spa", "spd", "spe")
 HAZARDS = ("stealthrock", "spikes", "toxicspikes", "stickyweb")
@@ -39,8 +68,11 @@ def boost_mult(stage: int) -> float:
     return (2 + stage) / 2 if stage >= 0 else 2 / (2 - stage)
 
 
-def hazard_chip(species: str, side_snapshot_prefix: str, snapshot: dict) -> float:
+def hazard_chip(species: str, side_snapshot_prefix: str, snapshot: dict,
+                item: str = "", ability: str = "") -> float:
     """Fraction of max HP lost to entry hazards when this species switches in."""
+    if item == "heavydutyboots":
+        return 0.0
     entry = lookup(species)
     if entry is None:
         return 0.0
@@ -48,7 +80,7 @@ def hazard_chip(species: str, side_snapshot_prefix: str, snapshot: dict) -> floa
     chip = 0.0
     if snapshot[f"{side_snapshot_prefix}_hazard_stealthrock"]:
         chip += 0.125 * effectiveness("rock", types)
-    if "flying" not in types:  # crude groundedness check (Levitate is hidden info)
+    if "flying" not in types and ability != "levitate":
         spikes = snapshot[f"{side_snapshot_prefix}_hazard_spikes"]
         chip += {0: 0.0, 1: 1 / 8, 2: 1 / 6, 3: 1 / 4}[spikes]
     return min(chip, 1.0)
@@ -60,10 +92,24 @@ class _Active:
         self.hp = mon["hp"]
         self.status = mon["status"]
         self.fainted = mon["fainted"]
+        self.sleep_turns = mon.get("sleep_turns", 0)
+        self.tox_turns = mon.get("tox_turns", 0)
         dex = lookup(mon["species"])
-        self.types = dex["types"] if dex else []
-        self.stats = real_stats(mon["species"])  # level-100, predicted EV/nature/IV
+        self.orig_types = dex["types"] if dex else []
+        tera = (mon.get("tera") or "").lower()
+        self.types = [tera] if tera else list(self.orig_types)  # already Tera'd?
+        self.stab_types = set(self.orig_types) | ({tera} if tera else set())
+        self.item = predicted_item(mon)
+        self.ability = predicted_ability(mon)
+        self.stats = dict(real_stats(mon["species"]))  # level-100, predicted spread
+        if self.item == "boosterenergy" and self.ability in ("protosynthesis", "quarkdrive"):
+            best = max((s for s in BOOST_STATS), key=lambda s: self.stats[s])
+            self.stats[best] = int(self.stats[best] * (1.5 if best == "spe" else 1.3))
         self.boosts = dict(boosts) if boosts else {s: 0 for s in BOOST_STATS}
+
+    def terastallize(self, tera_type: str) -> None:
+        self.types = [tera_type]
+        self.stab_types = set(self.orig_types) | {tera_type}
 
 
 class SimState:
@@ -71,6 +117,7 @@ class SimState:
 
     def __init__(self, game: dict, snap: dict):
         self.snap = dict(snap)
+        self.field = game.get("field") or {}
         self.active = {}
         for side in ("p1", "p2"):
             mon = next((m for m in game["roster"][side]
@@ -87,35 +134,86 @@ class SimState:
     def speed(self, side: str) -> float:
         a = self.active[side]
         spe = a.stats["spe"] * boost_mult(a.boosts["spe"])
+        if a.item == "choicescarf":
+            spe *= 1.5
+        if self.snap.get(f"{side}_screen_tailwind"):
+            spe *= 2
         return spe * (0.5 if a.status == "par" else 1.0)
 
     def switch(self, side: str, mon: dict) -> None:
-        chip = hazard_chip(mon["species"], side, self.snap)
-        self.active[side] = _Active({**mon, "hp": max(mon["hp"] - chip, 0.0)})
+        old = self.active[side]
+        if old.ability == "regenerator" and not old.fainted and old.hp > 0:
+            self.snap[f"{side}_hp_total"] += min(1 / 3, 1.0 - old.hp)
+        incoming = _Active(mon)
+        chip = hazard_chip(mon["species"], side, self.snap,
+                           incoming.item, incoming.ability)
+        incoming.hp = max(mon["hp"] - chip, 0.0)
+        self.active[side] = incoming
         self.snap[f"{side}_hp_total"] -= min(chip, mon["hp"])
-        if self.active[side].hp <= 0:
-            self.active[side].fainted = True
+        if incoming.hp <= 0:
+            incoming.fainted = True
             self.snap[f"{side}_fainted"] += 1
+        elif incoming.ability == "intimidate":
+            opp = self._opp(side)
+            self.snap[f"{opp}_boost_atk"] = max(-6, self.snap[f"{opp}_boost_atk"] - 1)
+            self.active[opp].boosts["atk"] = self.snap[f"{opp}_boost_atk"]
 
     def damage_fraction(self, side: str, move: dict) -> float:
         atk, dfn = self.active[side], self.active[self._opp(side)]
+        if ABILITY_IMMUNE.get(dfn.ability) == move["type"]:
+            return 0.0  # Levitate / Flash Fire / Water Absorb / ...
+        if effectiveness(move["type"], dfn.types) == 0:
+            return 0.0
+        if move.get("fixed"):  # Seismic Toss / Night Shade: level = 100 damage
+            dmg = 100 if move["fixed"] == "level" else float(move["fixed"])
+            return dmg / dfn.stats["hp"] * move.get("accuracy", 1.0)
+
         physical = move["category"] == "Physical"
         weather = self.snap.get("weather", "")
         terrain = self.snap.get("terrain", "")
-        a_stat = atk.stats["atk" if physical else "spa"]
-        a_stat *= boost_mult(atk.boosts["atk" if physical else "spa"])
-        if physical and atk.status == "brn":
+        # offensive stat: Foul Play uses the target's Attack; Body Press the
+        # user's Defense; otherwise Atk/SpA — with the matching boost stage,
+        # which Unaware defenders ignore
+        off_owner = dfn if move.get("off_pokemon") == "target" else atk
+        off_stat = move.get("off_stat") or ("atk" if physical else "spa")
+        a_stat = off_owner.stats[off_stat]
+        if dfn.ability != "unaware":
+            a_stat *= boost_mult(off_owner.boosts.get(off_stat, 0))
+        if atk.status and atk.ability == "guts":
+            a_stat *= 1.5  # Guts: status boosts instead of hindering
+        elif physical and atk.status == "brn":
             a_stat *= 0.5
-        d_stat = dfn.stats["def" if physical else "spd"]
-        d_stat *= boost_mult(dfn.boosts["def" if physical else "spd"])
+        if atk.item == "choiceband" and physical:
+            a_stat *= 1.5
+        if atk.item == "choicespecs" and not physical:
+            a_stat *= 1.5
+        if atk.ability == "supremeoverlord":
+            a_stat *= 1 + 0.1 * self.snap.get(f"{side}_fainted", 0)
+
+        def_stat = move.get("def_stat") or ("def" if physical else "spd")
+        d_stat = dfn.stats[def_stat]
+        if atk.ability != "unaware":
+            d_stat *= boost_mult(dfn.boosts.get(def_stat, 0))
+        if dfn.item == "assaultvest" and not physical:
+            d_stat *= 1.5
+        if dfn.item == "eviolite":
+            d_stat *= 1.5
         if weather == "sandstorm" and not physical and "rock" in dfn.types:
             d_stat *= 1.5  # sand boosts Rock-types' SpD
         if weather in ("snow", "snowscape") and physical and "ice" in dfn.types:
             d_stat *= 1.5  # snow boosts Ice-types' Def
+
         dmg = (42 * move["power"] * a_stat / d_stat) / 50 + 2
         frac = dmg / dfn.stats["hp"] * 0.925  # avg roll
-        frac *= 1.5 if move["type"] in atk.types else 1.0
+        frac *= move.get("multihit", 1)
+        frac *= 1.5 if move["type"] in atk.stab_types else 1.0
         frac *= effectiveness(move["type"], dfn.types)
+        if atk.item == "lifeorb":
+            frac *= 1.3
+        if dfn.ability in ("multiscale", "shadowshield") and dfn.hp >= 0.999:
+            frac *= 0.5
+        if dfn.ability == "thickfat" and move["type"] in ("fire", "ice"):
+            frac *= 0.5
         if atk.status == "par":
             frac *= 0.75  # expected value of the 25% full-paralysis chance
         if weather in ("raindance", "rain", "primordialsea"):
@@ -150,7 +248,8 @@ class SimState:
         opp = self.active[opp_side]
         if me.fainted:
             return
-        if me.status in ("slp", "frz"):  # immobilized: moves fail...
+        if me.status in ("slp", "frz") and me.sleep_turns < 3:
+            # immobilized (guaranteed wake after 3 sleep turns) — moves fail...
             if me.status == "slp" and norm_name(move.get("name", "")) == "sleeptalk":
                 move = self._sleep_talk_proxy(side)  # ...except Sleep Talk
                 if move is None:
@@ -166,14 +265,39 @@ class SimState:
                     self.snap[f"{side}_statused"] += 1
                 me.status = "slp"
             return
-        if move["category"] != "Status" and move["power"] > 0:
+        if move["category"] != "Status" and (move["power"] > 0 or move.get("fixed")):
             frac = self.damage_fraction(side, move)
             dealt = min(frac, opp.hp)
+            if (opp.item == "focussash" and opp.hp >= 0.999 and dealt >= opp.hp):
+                dealt = opp.hp - 0.01  # Sash: survive one hit from full
             opp.hp -= dealt
             self.snap[f"{opp_side}_hp_total"] -= dealt
             if opp.hp <= 0:
                 opp.hp, opp.fainted = 0.0, True
                 self.snap[f"{opp_side}_fainted"] += 1
+            if dealt > 0 and move.get("drain"):
+                healed = min(dealt * move["drain"], 1.0 - me.hp)
+                me.hp += healed
+                self.snap[f"{side}_hp_total"] += healed
+            self_dmg = dealt * move.get("recoil", 0)
+            if dealt > 0 and me.item == "lifeorb":
+                self_dmg += 0.1
+            if dealt > 0 and move.get("contact") and opp.item == "rockyhelmet" \
+                    and not opp.fainted:
+                self_dmg += 1 / 6
+            if self_dmg:
+                lost = min(self_dmg, me.hp)
+                me.hp -= lost
+                self.snap[f"{side}_hp_total"] -= lost
+                if me.hp <= 0:
+                    me.fainted = True
+                    self.snap[f"{side}_fainted"] += 1
+            # meaningful secondary status (Scald burn, Nuzzle para, ...)
+            if (dealt > 0 and move.get("sec_status") and move.get("sec_chance", 0) >= 30
+                    and not opp.status and not opp.fainted
+                    and STATUS_IMMUNE.get(move["sec_status"]) not in opp.types):
+                opp.status = move["sec_status"]
+                self.snap[f"{opp_side}_statused"] += 1
             return
         if move.get("inflicts") and not opp.status and not opp.fainted \
                 and STATUS_IMMUNE.get(move["inflicts"]) not in opp.types:
@@ -208,6 +332,9 @@ class SimState:
                      and act["move"].get("power", 0) > 0
                      for side, act in actions.items()}
         for side, act in actions.items():
+            if act.get("tera") and not self.snap.get(f"{side}_tera_used"):
+                self.active[side].terastallize(act["tera"])
+                self.snap[f"{side}_tera_used"] = 1
             if act["kind"] == "switch":
                 self.switch(side, act["mon"])
             else:
@@ -234,12 +361,19 @@ class SimState:
             if a.fainted:
                 continue
             delta = 0.0
-            if a.status == "brn":
-                delta -= 1 / 16
-            elif a.status in ("psn", "tox"):
-                delta -= 1 / 8  # tox ramps; flat 1/8 is the one-turn approximation
-            if weather == "sandstorm" and not ({"rock", "ground", "steel"} & set(a.types)):
-                delta -= 1 / 16
+            if a.ability != "magicguard":
+                if a.status == "brn":
+                    delta -= 1 / 16
+                elif a.status == "psn":
+                    delta -= 1 / 8
+                elif a.status == "tox":
+                    delta -= min(a.tox_turns + 1, 15) / 16  # ramping toxic counter
+                if weather == "sandstorm" and not ({"rock", "ground", "steel"} & set(a.types)):
+                    delta -= 1 / 16
+            if a.item == "leftovers":
+                delta += 1 / 16
+            elif a.item == "blacksludge":
+                delta += 1 / 16 if "poison" in a.types else -1 / 8
             if terrain == "grassyterrain" and _grounded(a):
                 delta += 1 / 16
             if not delta:
@@ -253,7 +387,8 @@ class SimState:
 
     def to_snapshot(self) -> dict:
         out = dict(self.snap)
-        out["turn"] = self.snap["turn"] + 1
+        next_turn = self.snap["turn"] + 1
+        out["turn"] = next_turn
         for side in ("p1", "p2"):
             a = self.active[side]
             out[f"{side}_active_species"] = a.species
@@ -261,6 +396,17 @@ class SimState:
             out[f"{side}_active_status"] = a.status
             for s in BOOST_STATS:
                 out[f"{side}_boost_{s}"] = a.boosts[s]
+            # screens set N turns ago expire — the next-turn state must show it
+            for screen, set_turn in self.field.get("screen_turns", {}).get(side, {}).items():
+                if out.get(f"{side}_screen_{screen}") and \
+                        next_turn - set_turn >= SCREEN_DURATION:
+                    out[f"{side}_screen_{screen}"] = 0
+        if out.get("weather") and self.field.get("weather_set_turn") is not None \
+                and next_turn - self.field["weather_set_turn"] >= FIELD_DURATION:
+            out["weather"] = ""
+        if out.get("terrain") and self.field.get("terrain_set_turn") is not None \
+                and next_turn - self.field["terrain_set_turn"] >= FIELD_DURATION:
+            out["terrain"] = ""
         return out
 
 
@@ -282,6 +428,10 @@ def moves_for(mon: dict, snap: dict | None = None, side: str | None = None) -> l
     moves = [dict(move_info(n), name=move_info(n)["name"]) for n in names if move_info(n)]
     if not moves:
         return _typical_moves(mon["species"])
+
+    uses = mon.get("uses", {})
+    moves = [m for m in moves
+             if uses.get(m["name"], 0) < m.get("pp", 16) * 1.6] or moves  # PP exhausted
 
     volatiles = set(mon.get("volatiles", ()))
     last = norm_name(mon.get("last_move", ""))
@@ -317,8 +467,16 @@ def player_actions(game: dict, side: str) -> list[dict]:
     me = next((m for m in roster if m["active"]), None)
     acts = []
     if me and not me["fainted"]:
-        for move in moves_for(me, snap, side):
+        moves = moves_for(me, snap, side)
+        for move in moves:
             acts.append({"kind": "move", "label": move["name"], "move": move})
+        # Terastallizing is a once-per-battle action taken alongside a move
+        tera = predicted_tera(me)
+        if tera and snap is not None and not snap.get(f"{side}_tera_used"):
+            for move in moves:
+                if move["category"] != "Status":
+                    acts.append({"kind": "move", "move": move, "tera": tera,
+                                 "label": f"Tera {tera.title()} + {move['name']}"})
     for mon in roster:
         if not mon["fainted"] and not mon["active"] and mon["hp"] > 0:
             acts.append({"kind": "switch", "label": f"switch to {mon['species']}",

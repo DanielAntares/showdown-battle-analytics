@@ -144,9 +144,18 @@ members of any team and get the most likely hidden teammates, ranked.
 
 Both battle views include an **Advisor** panel: at any chosen turn (or live, right
 now), it recommends the **best action by 1-ply minimax** — every combination of the
-player's options and the opponent's plausible responses is simulated with a damage
+player's options and the opponent's plausible responses is simulated with a battle
 engine and scored by the win-probability model, and the pick is the action with the
-best worst-case outcome. Crucially, it reasons about **moves a Pokémon hasn't shown
+best worst-case outcome. The engine models items (Choice/Life Orb power, Boots hazard
+immunity, Sash, Scarf, Leftovers, Booster Energy), key abilities (Levitate and
+type-absorbing immunities, Unaware, Guts, Multiscale, Intimidate, Supreme Overlord,
+Regenerator), real move mechanics (Body Press, Foul Play, fixed damage, drain,
+recoil, multi-hit, meaningful secondaries), **Terastallization as an explicit action
+for both sides** (predicted Tera types), status conditions with immobilization and
+residual damage, field effects with **duration tracking** (screens/weather/terrain
+expire on schedule), the ramping Toxic counter, sleep turns, and per-move **PP
+tracking** — all resolved from revealed information first, falling back to
+usage-statistics predictions. Crucially, it reasons about **moves a Pokémon hasn't shown
 yet**: unrevealed moves and EV/nature spreads are predicted from ladder usage stats,
 so the advisor evaluates a Clodsire's likely Earthquake even when only its Toxic has
 been revealed. The panel shows the predicted sets it's assuming.

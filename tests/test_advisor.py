@@ -165,6 +165,7 @@ def test_upkeep_residuals():
     game, snap = _sim_1v1("Kingambit", "Dondozo")
     sim = SimState(game, snap)
     sim.active["p2"].status = "brn"
+    sim.active["p2"].item = ""  # predicted Leftovers would offset the chip
     sim.snap["weather"] = "sandstorm"
     sim.upkeep()
     # Dondozo (water): burn 1/16 + sand 1/16; Kingambit (dark/steel): sand-immune

@@ -30,6 +30,8 @@ class Pokemon:
     revealed: bool = False  # actually seen in battle, not just team preview
     tera: str = ""
     moves: set = field(default_factory=set)
+    uses: dict = field(default_factory=dict)  # move -> times used (PP tracking)
+    sleep_turns: int = 0
     item: str = ""     # revealed held item ("" = unknown)
     ability: str = ""  # revealed ability ("" = unknown)
 
@@ -46,6 +48,8 @@ class Side:
     screens: set = field(default_factory=set)
     volatiles: set = field(default_factory=set)  # encore/taunt/... on the active
     last_move: str = ""  # last move the active used since switching in
+    screen_turns: dict = field(default_factory=dict)  # screen -> turn it was set
+    tox_turns: int = 0  # toxic counter of the active (resets on switch)
 
     def active_mon(self) -> Pokemon | None:
         return self.team.get(self.active)
@@ -94,6 +98,8 @@ class BattleParser:
         self.field: set[str] = set()  # terrains, trick room, ...
         self.turn = 0
         self.tier = ""
+        self.weather_set_turn = 0
+        self.terrain_set_turn = 0
         self.winner: str | None = None
         self.snapshots: list[dict] = []
         self.events: dict[int, list] = {}  # turn -> what both players did
@@ -137,6 +143,7 @@ class BattleParser:
         side.boosts = {s: 0 for s in BOOST_STATS}  # switching clears boosts
         side.volatiles = set()  # ... and volatile states / move locks
         side.last_move = ""
+        side.tox_turns = 0  # the toxic counter resets on switching out
 
     def _handle_replace(self, ident: str, details: str) -> None:
         """Zoroark's Illusion drops: the nickname's true species is revealed."""
@@ -152,7 +159,12 @@ class BattleParser:
         if cond in HAZARD_MAX:
             side.hazards[cond] = min(side.hazards[cond] + 1, HAZARD_MAX[cond]) if start else 0
         elif cond in SCREENS:
-            (side.screens.add if start else side.screens.discard)(cond)
+            if start:
+                side.screens.add(cond)
+                side.screen_turns[cond] = self.turn
+            else:
+                side.screens.discard(cond)
+                side.screen_turns.pop(cond, None)
 
     def feed(self, line: str) -> None:
         if not line.startswith("|"):
@@ -190,6 +202,7 @@ class BattleParser:
             if mon := self._mon(p[2]):
                 mon.revealed = True
                 mon.moves.add(p[3])
+                mon.uses[p[3]] = mon.uses.get(p[3], 0) + 1
                 self.sides[_side_of(p[2])].last_move = p[3]
                 self._event(_side_of(p[2]), f"{mon.species} used {p[3]}")
         elif cmd in ("-damage", "-heal", "-sethp"):
@@ -250,9 +263,14 @@ class BattleParser:
             p1.screens, p2.screens = p2.screens, p1.screens
         elif cmd == "-weather":
             name = _norm_condition(p[2])
+            if name != "none" and "[upkeep]" not in line:
+                self.weather_set_turn = self.turn  # fresh weather, not a tick
             self.weather = "" if name == "none" else name
         elif cmd == "-fieldstart":
-            self.field.add(_norm_condition(p[2]))
+            cond = _norm_condition(p[2])
+            if cond.endswith("terrain"):
+                self.terrain_set_turn = self.turn
+            self.field.add(cond)
         elif cmd == "-fieldend":
             self.field.discard(_norm_condition(p[2]))
         elif cmd == "-terastallize":
@@ -261,6 +279,12 @@ class BattleParser:
                 self._event(_side_of(p[2]), f"{mon.species} Terastallized ({p[3]})")
         elif cmd == "turn":
             self.turn = int(p[2])
+            for side in self.sides.values():  # tick status counters at turn starts
+                if active := side.active_mon():
+                    if active.status == "slp":
+                        active.sleep_turns += 1
+                    elif active.status == "tox":
+                        side.tox_turns += 1
             self.snapshots.append(self.snapshot())
         elif cmd == "win":
             name = p[2]
@@ -319,11 +343,19 @@ def game_state(parser: BattleParser, id: str | None = None,
             sid: [{"species": m.species, "hp": m.hp, "status": m.status,
                    "fainted": m.fainted, "revealed": m.revealed,
                    "active": key == side.active, "moves": sorted(m.moves),
-                   "item": m.item, "ability": m.ability,
+                   "item": m.item, "ability": m.ability, "tera": m.tera,
+                   "uses": dict(m.uses), "sleep_turns": m.sleep_turns,
                    "volatiles": sorted(side.volatiles) if key == side.active else [],
-                   "last_move": side.last_move if key == side.active else ""}
+                   "last_move": side.last_move if key == side.active else "",
+                   "tox_turns": side.tox_turns if key == side.active else 0}
                   for key, m in side.team.items()]
             for sid, side in parser.sides.items()
+        },
+        "field": {
+            "weather_set_turn": parser.weather_set_turn,
+            "terrain_set_turn": parser.terrain_set_turn,
+            "screen_turns": {sid: dict(s.screen_turns)
+                             for sid, s in parser.sides.items()},
         },
         "snapshots": list(parser.snapshots),
         "events": dict(parser.events),

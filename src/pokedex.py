@@ -119,7 +119,11 @@ def build_moves_asset() -> None:
     raw = requests.get(MOVES_URL, timeout=60).json()
     moves = {}
     for key, mv in raw.items():
-        moves[key] = {
+        sec = mv.get("secondary") or {}
+        multihit = mv.get("multihit")
+        if isinstance(multihit, list):
+            multihit = sum(multihit) / len(multihit)  # expected hits (2-5 -> 3.5-ish)
+        entry = {
             "name": mv.get("name", key),
             "type": mv["type"].lower(),
             "category": mv["category"],  # Physical / Special / Status
@@ -127,6 +131,7 @@ def build_moves_asset() -> None:
             "priority": mv.get("priority", 0),
             "accuracy": 1.0 if mv.get("accuracy") is True else mv.get("accuracy", 100) / 100,
             "target": mv.get("target", "normal"),
+            "pp": mv.get("pp", 16),
             # effect payloads the turn simulator understands
             "inflicts": mv.get("status"),                     # brn / par / tox / ...
             "boosts": mv.get("boosts"),                       # e.g. {"atk": 2}
@@ -134,7 +139,22 @@ def build_moves_asset() -> None:
             "heal": bool(mv.get("heal")) or key in ("recover", "roost", "slackoff",
                                                     "softboiled", "moonlight",
                                                     "morningsun", "synthesis"),
+            # mechanics: stat overrides, fixed damage, recoil/drain, multi-hit
+            "off_stat": (mv.get("overrideOffensiveStat") or "").lower() or None,
+            "off_pokemon": mv.get("overrideOffensivePokemon"),  # 'target' = Foul Play
+            "def_stat": (mv.get("overrideDefensiveStat") or "").lower() or None,
+            "fixed": mv.get("damage"),                        # 'level' or a number
+            "recoil": (mv["recoil"][0] / mv["recoil"][1]) if mv.get("recoil") else 0,
+            "drain": (mv["drain"][0] / mv["drain"][1]) if mv.get("drain") else 0,
+            "multihit": multihit or 1,
+            "contact": 1 if (mv.get("flags") or {}).get("contact") else 0,
+            "sec_status": sec.get("status"),
+            "sec_chance": sec.get("chance", 0),
         }
+        moves[key] = {k: v for k, v in entry.items() if v not in (None, 0, "")} \
+            | {"name": entry["name"], "type": entry["type"],
+               "category": entry["category"], "power": entry["power"],
+               "accuracy": entry["accuracy"], "pp": entry["pp"]}
     MOVES_ASSET.write_text(json.dumps(moves, separators=(",", ":")), encoding="utf-8")
     print(f"Wrote {len(moves)} moves to {MOVES_ASSET.relative_to(ROOT)} "
           f"({MOVES_ASSET.stat().st_size / 1024:.0f} KB)")

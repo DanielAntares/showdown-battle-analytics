@@ -66,6 +66,8 @@ def advisor_top(game: dict, side: str, booster, meta) -> tuple[str, str] | None:
     label = out.iloc[0].action
     if label.startswith("switch to "):
         return ("switch", _norm(label.split("switch to ", 1)[1]))
+    if " + " in label:  # "Tera Fire + Flare Blitz" -> compare the move itself
+        label = label.split(" + ", 1)[1]
     return ("move", _norm(label))
 
 
