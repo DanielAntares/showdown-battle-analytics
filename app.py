@@ -175,6 +175,9 @@ def render_turn_review(state_at, game: dict, probs, names: dict, key_prefix: str
     c1.metric(f"P({names['p1']} wins) at turn {turn} start", f"{p_before:.0%}",
               f"{delta:+.0%} over this turn" if delta is not None else None)
     c1.caption(confidence_cue(p_before, turn))
+    board = board_state_line(game["snapshots"][turn - 1], names)
+    if board:
+        st.caption(f"🧭 board at turn {turn} start: {board}")
     story = turn_story(game, turn)
     played = [f"**{names[s]}**: {'; '.join(story[s])}" for s in ("p1", "p2") if story[s]]
     if story["luck"]:
@@ -228,6 +231,45 @@ def called_from_turn(game: dict, probs) -> int | None:
     last_wrong = right_side[~right_side].index[-1]
     later = [t for t in probs.index if t > last_wrong]
     return int(later[0]) if later else None
+
+
+WEATHER_LABEL = {"raindance": "🌧 Rain", "primordialsea": "🌧 Heavy Rain",
+                 "sunnyday": "☀️ Sun", "desolateland": "☀️ Harsh Sun",
+                 "sandstorm": "🌪 Sandstorm", "snow": "❄️ Snow", "snowscape": "❄️ Snow"}
+STATUS_LABEL = {"brn": "🔥 burned", "par": "⚡ paralyzed", "slp": "💤 asleep",
+                "frz": "🧊 frozen", "psn": "☠️ poisoned", "tox": "☠️ badly poisoned"}
+
+
+def board_state_line(snap: dict, names: dict) -> str:
+    """Everything the model knows about the board right now, in one line."""
+    bits = []
+    if snap.get("weather"):
+        bits.append(WEATHER_LABEL.get(snap["weather"], snap["weather"]))
+    if snap.get("terrain"):
+        bits.append("🌐 " + snap["terrain"].replace("terrain", "").title() + " Terrain")
+    if snap.get("trickroom"):
+        bits.append("🔄 Trick Room")
+    for s in ("p1", "p2"):
+        if snap.get(f"{s}_active_status"):
+            label = STATUS_LABEL.get(snap[f"{s}_active_status"], snap[f"{s}_active_status"])
+            bits.append(f"{snap[f'{s}_active_species']} is {label}")
+        hz = []
+        if snap.get(f"{s}_hazard_stealthrock"):
+            hz.append("Rocks")
+        if snap.get(f"{s}_hazard_spikes"):
+            hz.append(f"Spikes×{snap[f'{s}_hazard_spikes']}")
+        if snap.get(f"{s}_hazard_toxicspikes"):
+            hz.append(f"T.Spikes×{snap[f'{s}_hazard_toxicspikes']}")
+        if snap.get(f"{s}_hazard_stickyweb"):
+            hz.append("Web")
+        if hz:
+            bits.append(f"hazards vs {names[s]}: {', '.join(hz)}")
+        screens = [n for n, lbl in (("reflect", "Reflect"), ("lightscreen", "Light Screen"),
+                                    ("auroraveil", "Aurora Veil"), ("tailwind", "Tailwind"))
+                   if snap.get(f"{s}_screen_{n}")]
+        if screens:
+            bits.append(f"{names[s]}: {', '.join(screens)} up")
+    return " · ".join(bits)
 
 
 def confidence_cue(prob: float, turn: int) -> str:
@@ -461,6 +503,9 @@ def live_panel() -> None:
     c1.metric(f"P({p1} wins) right now", f"{probs.iloc[-1]:.0%}", delta)
     c2.metric("Turn", game["n_turns"])
     st.caption(confidence_cue(probs.iloc[-1], game["n_turns"]))
+    board = board_state_line(game["snapshots"][-1], {"p1": p1, "p2": p2})
+    if board:
+        st.caption(f"🧭 {board}")
     st.plotly_chart(winprob_figure(game, probs), width="stretch")
     if live.status == "ended" and game["winner"]:
         st.success(f"Battle over — {game[game['winner'] + '_name']} won. "

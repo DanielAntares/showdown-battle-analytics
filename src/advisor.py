@@ -23,6 +23,11 @@ from src.predict import calibrate
 # priority attacks that fail outright unless the target chose an attacking move
 FAILS_VS_NONATTACK = {"suckerpunch", "thunderclap"}
 
+
+def _grounded(active) -> bool:
+    """Crude groundedness: Flying-types float (Levitate/Boots are hidden info)."""
+    return "flying" not in active.types
+
 BOOST_STATS = ("atk", "def", "spa", "spd", "spe")
 HAZARDS = ("stealthrock", "spikes", "toxicspikes", "stickyweb")
 HAZARD_MAX = {"stealthrock": 1, "spikes": 3, "toxicspikes": 2, "stickyweb": 1}
@@ -95,21 +100,34 @@ class SimState:
     def damage_fraction(self, side: str, move: dict) -> float:
         atk, dfn = self.active[side], self.active[self._opp(side)]
         physical = move["category"] == "Physical"
+        weather = self.snap.get("weather", "")
+        terrain = self.snap.get("terrain", "")
         a_stat = atk.stats["atk" if physical else "spa"]
         a_stat *= boost_mult(atk.boosts["atk" if physical else "spa"])
         if physical and atk.status == "brn":
             a_stat *= 0.5
         d_stat = dfn.stats["def" if physical else "spd"]
         d_stat *= boost_mult(dfn.boosts["def" if physical else "spd"])
+        if weather == "sandstorm" and not physical and "rock" in dfn.types:
+            d_stat *= 1.5  # sand boosts Rock-types' SpD
+        if weather in ("snow", "snowscape") and physical and "ice" in dfn.types:
+            d_stat *= 1.5  # snow boosts Ice-types' Def
         dmg = (42 * move["power"] * a_stat / d_stat) / 50 + 2
         frac = dmg / dfn.stats["hp"] * 0.925  # avg roll
         frac *= 1.5 if move["type"] in atk.types else 1.0
         frac *= effectiveness(move["type"], dfn.types)
-        weather = self.snap.get("weather", "")
-        if weather in ("raindance", "rain"):
+        if atk.status == "par":
+            frac *= 0.75  # expected value of the 25% full-paralysis chance
+        if weather in ("raindance", "rain", "primordialsea"):
             frac *= {"water": 1.5, "fire": 0.5}.get(move["type"], 1.0)
         elif weather in ("sunnyday", "sun", "desolateland"):
             frac *= {"fire": 1.5, "water": 0.5}.get(move["type"], 1.0)
+        if terrain and _grounded(atk):
+            frac *= {"electricterrain": {"electric": 1.3},
+                     "grassyterrain": {"grass": 1.3},
+                     "psychicterrain": {"psychic": 1.3}}.get(terrain, {}).get(move["type"], 1.0)
+        if terrain == "mistyterrain" and move["type"] == "dragon" and _grounded(dfn):
+            frac *= 0.5
         opp_side = self._opp(side)
         screens = {s for s in SCREENS if self.snap[f"{opp_side}_screen_{s}"]}
         if "auroraveil" in screens or ("reflect" in screens and physical) \
@@ -117,11 +135,28 @@ class SimState:
             frac *= 0.5
         return frac * move.get("accuracy", 1.0)
 
+    def _sleep_talk_proxy(self, side: str) -> dict | None:
+        """Sleep Talk calls another move; approximate with the best STAB attack."""
+        a, opp = self.active[side], self.active[self._opp(side)]
+        if not a.types:
+            return None
+        best = max(a.types, key=lambda t: effectiveness(t, opp.types))
+        cat = "Physical" if a.stats["atk"] >= a.stats["spa"] else "Special"
+        return {"name": "(Sleep Talk)", "type": best, "category": cat,
+                "power": 80, "accuracy": 1.0, "priority": 0}
+
     def use_move(self, side: str, move: dict) -> None:
         me, opp_side = self.active[side], self._opp(side)
         opp = self.active[opp_side]
         if me.fainted:
             return
+        if me.status in ("slp", "frz"):  # immobilized: moves fail...
+            if me.status == "slp" and norm_name(move.get("name", "")) == "sleeptalk":
+                move = self._sleep_talk_proxy(side)  # ...except Sleep Talk
+                if move is None:
+                    return
+            else:
+                return
         if norm_name(move.get("name", "")) == "rest":
             # full heal at the cost of sleeping; fails (pure no-op) at full HP
             if me.hp < 0.999:
@@ -142,8 +177,13 @@ class SimState:
             return
         if move.get("inflicts") and not opp.status and not opp.fainted \
                 and STATUS_IMMUNE.get(move["inflicts"]) not in opp.types:
-            opp.status = move["inflicts"]
-            self.snap[f"{opp_side}_statused"] += 1
+            terrain = self.snap.get("terrain", "")
+            terrain_blocked = _grounded(opp) and (
+                terrain == "mistyterrain"
+                or (terrain == "electricterrain" and move["inflicts"] == "slp"))
+            if not terrain_blocked:
+                opp.status = move["inflicts"]
+                self.snap[f"{opp_side}_statused"] += 1
         if move.get("boosts"):
             target = me if move.get("target") == "self" else opp
             for stat, amt in move["boosts"].items():
@@ -179,7 +219,37 @@ class SimState:
             if (norm_name(move.get("name", "")) in FAILS_VS_NONATTACK
                     and not attacking.get(self._opp(side))):
                 continue  # Sucker Punch-likes whiff when the target isn't attacking
+            if (self.snap.get("terrain") == "psychicterrain"
+                    and move.get("priority", 0) > 0
+                    and _grounded(self.active[self._opp(side)])):
+                continue  # Psychic Terrain blocks priority against grounded targets
             self.use_move(side, move)
+        self.upkeep()
+
+    def upkeep(self) -> None:
+        """End-of-turn residuals: burn/poison/sand chip, Grassy Terrain healing."""
+        weather = self.snap.get("weather", "")
+        terrain = self.snap.get("terrain", "")
+        for side, a in self.active.items():
+            if a.fainted:
+                continue
+            delta = 0.0
+            if a.status == "brn":
+                delta -= 1 / 16
+            elif a.status in ("psn", "tox"):
+                delta -= 1 / 8  # tox ramps; flat 1/8 is the one-turn approximation
+            if weather == "sandstorm" and not ({"rock", "ground", "steel"} & set(a.types)):
+                delta -= 1 / 16
+            if terrain == "grassyterrain" and _grounded(a):
+                delta += 1 / 16
+            if not delta:
+                continue
+            new_hp = max(0.0, min(1.0, a.hp + delta))
+            self.snap[f"{side}_hp_total"] += new_hp - a.hp
+            a.hp = new_hp
+            if a.hp <= 0 and not a.fainted:
+                a.fainted = True
+                self.snap[f"{side}_fainted"] += 1
 
     def to_snapshot(self) -> dict:
         out = dict(self.snap)

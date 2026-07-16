@@ -152,6 +152,54 @@ def test_useless_moves_pruned():
     assert "Rest" in names  # hurt: Rest is a real option again
 
 
+def test_sleep_immobilizes_but_sleep_talk_attacks():
+    game, snap = _sim_1v1("Kingambit", "Dondozo", p1_status="slp")
+    sim = SimState(game, snap)
+    sim.use_move("p1", dict(move_info("Kowtow Cleave"), name="Kowtow Cleave"))
+    assert sim.active["p2"].hp == 1.0  # asleep: move fails
+    sim.use_move("p1", dict(move_info("Sleep Talk"), name="Sleep Talk"))
+    assert sim.active["p2"].hp < 1.0  # Sleep Talk still attacks
+
+
+def test_upkeep_residuals():
+    game, snap = _sim_1v1("Kingambit", "Dondozo")
+    sim = SimState(game, snap)
+    sim.active["p2"].status = "brn"
+    sim.snap["weather"] = "sandstorm"
+    sim.upkeep()
+    # Dondozo (water): burn 1/16 + sand 1/16; Kingambit (dark/steel): sand-immune
+    assert sim.active["p2"].hp == pytest.approx(1 - 2 / 16)
+    assert sim.active["p1"].hp == 1.0
+
+
+def test_psychic_terrain_blocks_priority():
+    game, snap = _sim_1v1("Kingambit", "Dondozo")
+    snap["terrain"] = "psychicterrain"
+    sim = SimState(game, snap)
+    sucker = dict(move_info("Sucker Punch"), name="Sucker Punch")
+    press = dict(move_info("Body Press"), name="Body Press")
+    sim.resolve({"p1": {"kind": "move", "move": sucker},
+                 "p2": {"kind": "move", "move": press}})
+    assert sim.active["p2"].hp == 1.0  # priority blocked vs grounded target
+
+
+def test_misty_terrain_blocks_status():
+    game, snap = _sim_1v1("Clodsire", "Dragapult")
+    snap["terrain"] = "mistyterrain"
+    sim = SimState(game, snap)
+    sim.use_move("p1", dict(move_info("Toxic"), name="Toxic"))
+    assert sim.active["p2"].status == ""  # Dragapult... has Flying? no: dragon/ghost -> grounded, blocked
+
+
+def test_terrain_boosts_grounded_electric():
+    game, snap = _sim_1v1("Raging Bolt", "Dondozo")
+    bolt = dict(move_info("Thunderbolt"), name="Thunderbolt")
+    plain = SimState(game, snap).damage_fraction("p1", bolt)
+    snap2 = dict(snap, terrain="electricterrain")
+    boosted = SimState(game, snap2).damage_fraction("p1", bolt)
+    assert boosted == pytest.approx(plain * 1.3)
+
+
 def test_recommend_lead_ranks_full_team():
     from src.predict import load_model, snapshot_features
     booster, meta = load_model()
