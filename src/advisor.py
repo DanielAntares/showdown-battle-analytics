@@ -451,6 +451,15 @@ def _typical_moves(species: str) -> list[dict]:
              "power": 80, "accuracy": 1.0, "priority": 0} for t in dex["types"]]
 
 
+def is_pure_setup(move: dict) -> bool:
+    """A self-boosting move with no damage, healing, or other utility — its only
+    payoff is future turns, which are wasted if the user is about to die."""
+    return bool(move.get("boosts")) and move.get("category") == "Status" \
+        and move.get("target", "self") == "self" \
+        and not move.get("heal") and not move.get("inflicts") \
+        and not move.get("side_condition")
+
+
 def _defender_types(game: dict | None, snap: dict, opp: str) -> list | None:
     """The opponent active's current typing, accounting for a used Tera."""
     if not game:
@@ -497,11 +506,15 @@ def moves_for(mon: dict, snap: dict | None = None, side: str | None = None,
     if snap is not None and side is not None:
         opp = "p2" if side == "p1" else "p1"
         opp_types = _defender_types(game, snap, opp)
+        status = mon.get("status", "")
         useful = []
         for m in moves:
             n = norm_name(m["name"])
             if (m.get("heal") or n == "rest") and mon["hp"] >= 0.99:
                 continue  # healing at full HP fails / does nothing
+            if is_pure_setup(m) and (status == "tox"
+                                     or (status in ("psn", "brn") and mon["hp"] < 0.5)):
+                continue  # don't set up while dying to residual damage
             if (m["category"] != "Status" and m.get("power", 0) > 0 and opp_types
                     and effectiveness(m["type"], opp_types) == 0):
                 continue  # the opponent is immune — clicking it whiffs

@@ -194,6 +194,19 @@ def test_sleep_counter_wakes_after_three():
     assert sim.active["p2"].hp < 1.0  # slept 3 turns: acts again
 
 
+def test_no_setup_while_dying_to_poison():
+    _, snap = _sim_1v1("Zamazenta", "Landorus-Therian")
+    game = {"roster": {"p1": [_mon("Zamazenta")], "p2": [_mon("Landorus-Therian", active=True)]},
+            "snapshots": [snap]}
+    # badly poisoned -> Iron Defense (pure setup) dropped, Body Press (attack) kept
+    healthy = _mon("Zamazenta", moves=["Iron Defense", "Body Press", "Crunch"])
+    assert "Iron Defense" in [m["name"] for m in moves_for(healthy, snap, "p1", game)]
+    dying = _mon("Zamazenta", status="tox", moves=["Iron Defense", "Body Press", "Crunch"])
+    names = [m["name"] for m in moves_for(dying, snap, "p1", game)]
+    assert "Iron Defense" not in names
+    assert "Body Press" in names and "Crunch" in names
+
+
 def test_ko_promotes_replacement():
     """After a KO the snapshot shows the opponent's replacement, not a 0-HP
     fainted active — otherwise the win-prob model misreads the KO as bad."""
