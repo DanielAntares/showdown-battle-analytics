@@ -194,6 +194,43 @@ def test_sleep_counter_wakes_after_three():
     assert sim.active["p2"].hp < 1.0  # slept 3 turns: acts again
 
 
+def test_immune_move_pruned():
+    _, snap = _sim_1v1("Slowking-Galar", "Iron Treads")  # snap matches roster below
+    game = {"roster": {
+        "p1": [_mon("Slowking-Galar", moves=["Sludge Bomb", "Thunder Wave"])],
+        "p2": [_mon("Iron Treads", active=True)]}, "snapshots": [snap]}
+    names = [m["name"] for m in moves_for(game["roster"]["p1"][0], snap, "p1", game)]
+    assert "Sludge Bomb" not in names  # Poison is immune vs Ground/Steel
+    assert "Thunder Wave" in names
+
+
+def test_immune_pruning_respects_tera():
+    _, snap = _sim_1v1("Great Tusk", "Corviknight")
+    game = {"roster": {
+        "p1": [_mon("Great Tusk", moves=["Headlong Rush", "Ice Spinner"])],
+        "p2": [_mon("Corviknight", active=True)]}, "snapshots": [snap]}
+    # Corviknight (Flying/Steel): Ground-type Headlong Rush is immune (Flying)
+    names = [m["name"] for m in moves_for(game["roster"]["p1"][0], snap, "p1", game)]
+    assert "Headlong Rush" not in names
+    # but if Corviknight has Tera'd Fighting, it loses Flying and Ground connects
+    game["roster"]["p2"][0]["tera"] = "Fighting"
+    names2 = [m["name"] for m in moves_for(game["roster"]["p1"][0], snap, "p1", game)]
+    assert "Headlong Rush" in names2
+
+
+def test_future_sight_never_recommended():
+    from src.advisor import SimState
+    game, snap = _sim_1v1("Slowking-Galar", "Kingambit")
+    fs = _mv("Future Sight")
+    sim = SimState(game, snap)
+    before = sim.active["p2"].hp
+    sim.use_move("p1", fs)
+    assert sim.active["p2"].hp == before  # no immediate damage (delayed)
+    mon = _mon("Slowking-Galar", moves=["Future Sight", "Sludge Bomb", "Chilly Reception"])
+    names = [m["name"] for m in moves_for(mon)]
+    assert "Future Sight" not in names  # abstained: 1-ply can't value it
+
+
 def test_pp_exhausted_move_filtered():
     mon = _mon("Heatran", moves=["Magma Storm", "Earth Power"],
                uses={"Magma Storm": 8})  # Magma Storm has 5 PP -> 8 max

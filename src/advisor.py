@@ -248,6 +248,8 @@ class SimState:
         opp = self.active[opp_side]
         if me.fainted:
             return
+        if norm_name(move.get("name", "")) in ("futuresight", "doomdesire"):
+            return  # delayed 2 turns — no immediate effect a 1-ply search can price
         if me.status in ("slp", "frz") and me.sleep_turns < 3:
             # immobilized (guaranteed wake after 3 sleep turns) — moves fail...
             if me.status == "slp" and norm_name(move.get("name", "")) == "sleeptalk":
@@ -420,7 +422,21 @@ def _typical_moves(species: str) -> list[dict]:
              "power": 80, "accuracy": 1.0, "priority": 0} for t in dex["types"]]
 
 
-def moves_for(mon: dict, snap: dict | None = None, side: str | None = None) -> list[dict]:
+def _defender_types(game: dict | None, snap: dict, opp: str) -> list | None:
+    """The opponent active's current typing, accounting for a used Tera."""
+    if not game:
+        return None
+    sp = snap.get(f"{opp}_active_species")
+    entry = next((m for m in game["roster"][opp]
+                  if m["species"] == sp and m.get("active")), None)
+    if entry and entry.get("tera"):
+        return [entry["tera"].lower()]
+    dex = lookup(sp)
+    return dex["types"] if dex else None
+
+
+def moves_for(mon: dict, snap: dict | None = None, side: str | None = None,
+              game: dict | None = None) -> list[dict]:
     """The moves to evaluate for a Pokémon: revealed plus likely-unrevealed ones
     (usage stats), then filtered for legality (Encore/Taunt/Choice lock) and
     obvious no-ops (healing at full HP, stacking a maxed hazard/screen)."""
@@ -432,6 +448,11 @@ def moves_for(mon: dict, snap: dict | None = None, side: str | None = None) -> l
     uses = mon.get("uses", {})
     moves = [m for m in moves
              if uses.get(m["name"], 0) < m.get("pp", 16) * 1.6] or moves  # PP exhausted
+    # Future Sight / Doom Desire pay off two turns later — a 1-ply search can't
+    # value that, so the advisor abstains from recommending them rather than
+    # mis-ranking a delayed move as an immediate no-op.
+    moves = [m for m in moves
+             if norm_name(m["name"]) not in ("futuresight", "doomdesire")] or moves
 
     volatiles = set(mon.get("volatiles", ()))
     last = norm_name(mon.get("last_move", ""))
@@ -446,11 +467,15 @@ def moves_for(mon: dict, snap: dict | None = None, side: str | None = None) -> l
 
     if snap is not None and side is not None:
         opp = "p2" if side == "p1" else "p1"
+        opp_types = _defender_types(game, snap, opp)
         useful = []
         for m in moves:
             n = norm_name(m["name"])
             if (m.get("heal") or n == "rest") and mon["hp"] >= 0.99:
                 continue  # healing at full HP fails / does nothing
+            if (m["category"] != "Status" and m.get("power", 0) > 0 and opp_types
+                    and effectiveness(m["type"], opp_types) == 0):
+                continue  # the opponent is immune — clicking it whiffs
             sc = m.get("side_condition")
             if sc in HAZARD_MAX and snap[f"{opp}_hazard_{sc}"] >= HAZARD_MAX[sc]:
                 continue  # hazard already at max layers
@@ -467,7 +492,7 @@ def player_actions(game: dict, side: str) -> list[dict]:
     me = next((m for m in roster if m["active"]), None)
     acts = []
     if me and not me["fainted"]:
-        moves = moves_for(me, snap, side)
+        moves = moves_for(me, snap, side, game)
         for move in moves:
             acts.append({"kind": "move", "label": move["name"], "move": move})
         # Terastallizing is a once-per-battle action taken alongside a move

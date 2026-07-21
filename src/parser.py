@@ -50,6 +50,7 @@ class Side:
     last_move: str = ""  # last move the active used since switching in
     screen_turns: dict = field(default_factory=dict)  # screen -> turn it was set
     tox_turns: int = 0  # toxic counter of the active (resets on switch)
+    future_pending: bool = False  # this side has an unresolved Future Sight/Doom Desire
 
     def active_mon(self) -> Pokemon | None:
         return self.team.get(self.active)
@@ -204,6 +205,8 @@ class BattleParser:
                 mon.moves.add(p[3])
                 mon.uses[p[3]] = mon.uses.get(p[3], 0) + 1
                 self.sides[_side_of(p[2])].last_move = p[3]
+                if _norm_condition(p[3]) in ("futuresight", "doomdesire"):
+                    self.sides[_side_of(p[2])].future_pending = True
                 self._event(_side_of(p[2]), f"{mon.species} used {p[3]}")
         elif cmd in ("-damage", "-heal", "-sethp"):
             if mon := self._mon(p[2]):
@@ -225,7 +228,10 @@ class BattleParser:
         elif cmd == "-start":
             self.sides[_side_of(p[2])].volatiles.add(_norm_condition(p[3]))
         elif cmd == "-end":
-            self.sides[_side_of(p[2])].volatiles.discard(_norm_condition(p[3]))
+            cond = _norm_condition(p[3])
+            self.sides[_side_of(p[2])].volatiles.discard(cond)
+            if cond in ("futuresight", "doomdesire"):  # resolved on the target's slot
+                self.sides["p1" if _side_of(p[2]) == "p2" else "p2"].future_pending = False
         elif cmd in ("-item", "-enditem"):
             if mon := self._mon(p[2]):
                 mon.item = p[3]  # item name; revealed by Knock Off, Boots proc, etc.
@@ -347,7 +353,8 @@ def game_state(parser: BattleParser, id: str | None = None,
                    "uses": dict(m.uses), "sleep_turns": m.sleep_turns,
                    "volatiles": sorted(side.volatiles) if key == side.active else [],
                    "last_move": side.last_move if key == side.active else "",
-                   "tox_turns": side.tox_turns if key == side.active else 0}
+                   "tox_turns": side.tox_turns if key == side.active else 0,
+                   "future_pending": side.future_pending if key == side.active else False}
                   for key, m in side.team.items()]
             for sid, side in parser.sides.items()
         },
