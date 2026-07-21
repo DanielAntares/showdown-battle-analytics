@@ -207,7 +207,11 @@ class BattleParser:
                 self.sides[_side_of(p[2])].last_move = p[3]
                 if _norm_condition(p[3]) in ("futuresight", "doomdesire"):
                     self.sides[_side_of(p[2])].future_pending = True
+                if "lockedmove" in line:  # emerged from Dig/Fly/... this turn
+                    self.sides[_side_of(p[2])].volatiles.discard("semiinvuln")
                 self._event(_side_of(p[2]), f"{mon.species} used {p[3]}")
+        elif cmd == "-prepare":  # charging a two-turn move (Dig/Fly/...) -> invulnerable
+            self.sides[_side_of(p[2])].volatiles.add("semiinvuln")
         elif cmd in ("-damage", "-heal", "-sethp"):
             if mon := self._mon(p[2]):
                 mon.hp, status = _parse_hp(p[3])

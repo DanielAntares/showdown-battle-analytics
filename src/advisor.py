@@ -22,6 +22,15 @@ from src.predict import calibrate
 
 # priority attacks that fail outright unless the target chose an attacking move
 FAILS_VS_NONATTACK = {"suckerpunch", "thunderclap"}
+# two-turn moves (charge/semi-invulnerable) and move-callers: a 1-ply search
+# can't value the two-turn commitment or predict what a caller copies, so the
+# advisor abstains from recommending them (and won't phantom-threaten with them)
+UNVALUABLE_MOVES = {
+    "dig", "fly", "bounce", "dive", "phantomforce", "shadowforce", "skyattack",
+    "solarbeam", "solarblade", "meteorbeam", "electroshot", "skydrop", "geomancy",
+    "freezeshot", "iceburn", "razorwind", "futuresight", "doomdesire",
+    "copycat", "metronome", "mirrormove", "assist", "naturepower", "mefirst",
+}
 # abilities granting outright immunity to a move type
 ABILITY_IMMUNE = {"levitate": "ground", "flashfire": "fire", "wellbakedbody": "fire",
                   "waterabsorb": "water", "stormdrain": "water", "dryskin": "water",
@@ -94,6 +103,7 @@ class _Active:
         self.fainted = mon["fainted"]
         self.sleep_turns = mon.get("sleep_turns", 0)
         self.tox_turns = mon.get("tox_turns", 0)
+        self.semiinvuln = "semiinvuln" in (mon.get("volatiles") or [])
         dex = lookup(mon["species"])
         self.orig_types = dex["types"] if dex else []
         tera = (mon.get("tera") or "").lower()
@@ -161,6 +171,8 @@ class SimState:
 
     def damage_fraction(self, side: str, move: dict) -> float:
         atk, dfn = self.active[side], self.active[self._opp(side)]
+        if dfn.semiinvuln and norm_name(move["name"]) not in ("earthquake", "magnitude"):
+            return 0.0  # underground/in-air (Dig/Fly): the attack misses
         if ABILITY_IMMUNE.get(dfn.ability) == move["type"]:
             return 0.0  # Levitate / Flash Fire / Water Absorb / ...
         if effectiveness(move["type"], dfn.types) == 0:
@@ -486,11 +498,8 @@ def moves_for(mon: dict, snap: dict | None = None, side: str | None = None,
     uses = mon.get("uses", {})
     moves = [m for m in moves
              if uses.get(m["name"], 0) < m.get("pp", 16) * 1.6] or moves  # PP exhausted
-    # Future Sight / Doom Desire pay off two turns later — a 1-ply search can't
-    # value that, so the advisor abstains from recommending them rather than
-    # mis-ranking a delayed move as an immediate no-op.
-    moves = [m for m in moves
-             if norm_name(m["name"]) not in ("futuresight", "doomdesire")] or moves
+    # abstain from two-turn / delayed / move-calling moves (see UNVALUABLE_MOVES)
+    moves = [m for m in moves if norm_name(m["name"]) not in UNVALUABLE_MOVES] or moves
 
     volatiles = set(mon.get("volatiles", ()))
     last = norm_name(mon.get("last_move", ""))
@@ -506,6 +515,9 @@ def moves_for(mon: dict, snap: dict | None = None, side: str | None = None,
     if snap is not None and side is not None:
         opp = "p2" if side == "p1" else "p1"
         opp_types = _defender_types(game, snap, opp)
+        opp_entry = next((m for m in (game or {}).get("roster", {}).get(opp, [])
+                          if m.get("active")), {})
+        opp_underground = "semiinvuln" in (opp_entry.get("volatiles") or [])
         status = mon.get("status", "")
         useful = []
         for m in moves:
@@ -518,6 +530,9 @@ def moves_for(mon: dict, snap: dict | None = None, side: str | None = None,
             if (m["category"] != "Status" and m.get("power", 0) > 0 and opp_types
                     and effectiveness(m["type"], opp_types) == 0):
                 continue  # the opponent is immune — clicking it whiffs
+            if (opp_underground and m["category"] != "Status"
+                    and n not in ("earthquake", "magnitude")):
+                continue  # target is underground/in-air (Dig/Fly) — attack misses
             sc = m.get("side_condition")
             if sc in HAZARD_MAX and snap[f"{opp}_hazard_{sc}"] >= HAZARD_MAX[sc]:
                 continue  # hazard already at max layers

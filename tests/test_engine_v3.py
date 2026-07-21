@@ -194,6 +194,33 @@ def test_sleep_counter_wakes_after_three():
     assert sim.active["p2"].hp < 1.0  # slept 3 turns: acts again
 
 
+def test_semi_invulnerable_target_cannot_be_hit():
+    game, snap = _sim_1v1("Iron Valiant", "Grafaiai")
+    sim = SimState(game, snap)
+    sim.active["p2"].semiinvuln = True  # Grafaiai is underground (Dig)
+    assert sim.damage_fraction("p1", _mv("Close Combat")) == 0.0
+    # ...but Earthquake still hits a digging target
+    assert sim.damage_fraction("p1", _mv("Earthquake")) > 0.0
+
+
+def test_charge_and_caller_moves_not_recommended():
+    mon = _mon("Grafaiai", moves=["Dig", "Copycat", "Knock Off", "Gunk Shot"])
+    names = [m["name"] for m in moves_for(mon)]
+    assert "Dig" not in names and "Copycat" not in names
+    assert "Knock Off" in names
+
+
+def test_attacks_dropped_vs_underground_opponent():
+    _, snap = _sim_1v1("Deoxys-Speed", "Grafaiai")
+    game = {"roster": {
+        "p1": [_mon("Deoxys-Speed", moves=["Psycho Boost", "Stealth Rock", "Spikes"])],
+        "p2": [_mon("Grafaiai", active=True, volatiles=["semiinvuln"])]},
+        "snapshots": [snap]}
+    names = [m["name"] for m in moves_for(game["roster"]["p1"][0], snap, "p1", game)]
+    assert "Psycho Boost" not in names        # would miss the underground target
+    assert "Stealth Rock" in names and "Spikes" in names  # hazards still useful
+
+
 def test_no_setup_while_dying_to_poison():
     _, snap = _sim_1v1("Zamazenta", "Landorus-Therian")
     game = {"roster": {"p1": [_mon("Zamazenta")], "p2": [_mon("Landorus-Therian", active=True)]},
