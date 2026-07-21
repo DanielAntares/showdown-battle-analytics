@@ -194,6 +194,24 @@ def test_sleep_counter_wakes_after_three():
     assert sim.active["p2"].hp < 1.0  # slept 3 turns: acts again
 
 
+def test_ko_promotes_replacement():
+    """After a KO the snapshot shows the opponent's replacement, not a 0-HP
+    fainted active — otherwise the win-prob model misreads the KO as bad."""
+    _, snap = _sim_1v1("Kingambit", "Pikachu")
+    game = {"roster": {
+        "p1": [_mon("Kingambit", moves=["Kowtow Cleave"])],
+        "p2": [_mon("Pikachu", active=True, hp=0.1),
+               _mon("Dondozo", active=False, hp=1.0)]},
+        "field": {}, "snapshots": [snap]}
+    sim = SimState(game, snap)
+    sim.use_move("p1", _mv("Kowtow Cleave"))
+    assert sim.active["p2"].fainted
+    out = sim.to_snapshot()
+    assert out["p2_active_species"] == "Dondozo"   # replacement promoted
+    assert out["p2_active_hp"] == 1.0
+    assert out["p2_fainted"] == 1                  # the faint still counts
+
+
 def test_immune_move_pruned():
     _, snap = _sim_1v1("Slowking-Galar", "Iron Treads")  # snap matches roster below
     game = {"roster": {

@@ -118,6 +118,7 @@ class SimState:
     def __init__(self, game: dict, snap: dict):
         self.snap = dict(snap)
         self.field = game.get("field") or {}
+        self.rosters = game.get("roster") or {}
         self.active = {}
         for side in ("p1", "p2"):
             mon = next((m for m in game["roster"][side]
@@ -387,12 +388,28 @@ class SimState:
                 a.fainted = True
                 self.snap[f"{side}_fainted"] += 1
 
+    def _replacement(self, side: str, fainted_species: str) -> dict | None:
+        """The mon that would be forced in after a faint — proxied by the
+        healthiest living benched Pokémon (we can't know the opponent's choice)."""
+        bench = [m for m in self.rosters.get(side, [])
+                 if not m["fainted"] and m["hp"] > 0 and m["species"] != fainted_species]
+        return max(bench, key=lambda m: m["hp"]) if bench else None
+
     def to_snapshot(self) -> dict:
         out = dict(self.snap)
         next_turn = self.snap["turn"] + 1
         out["turn"] = next_turn
         for side in ("p1", "p2"):
             a = self.active[side]
+            if a.fainted and (rep := self._replacement(side, a.species)):
+                # a fainted active is replaced next turn; showing the 0-HP fainted
+                # mon as "active" is out-of-distribution and wrecks the model's read
+                out[f"{side}_active_species"] = rep["species"]
+                out[f"{side}_active_hp"] = rep["hp"]
+                out[f"{side}_active_status"] = rep["status"]
+                for s in BOOST_STATS:
+                    out[f"{side}_boost_{s}"] = 0
+                continue
             out[f"{side}_active_species"] = a.species
             out[f"{side}_active_hp"] = max(a.hp, 0.0)
             out[f"{side}_active_status"] = a.status
