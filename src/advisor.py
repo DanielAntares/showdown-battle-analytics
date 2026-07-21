@@ -41,7 +41,10 @@ SCREEN_DURATION, FIELD_DURATION = 5, 5
 
 
 def predicted_item(mon: dict) -> str:
-    """Revealed item if known, else the species' most common item on the ladder."""
+    """Revealed item if known, else the species' most common item on the ladder.
+    An item known to be gone (consumed/knocked/popped) stays empty."""
+    if mon.get("item_consumed"):
+        return ""
     if mon.get("item"):
         return norm_name(mon["item"])
     entry = species_set(mon["species"])
@@ -173,6 +176,8 @@ class SimState:
         atk, dfn = self.active[side], self.active[self._opp(side)]
         if dfn.semiinvuln and norm_name(move["name"]) not in ("earthquake", "magnitude"):
             return 0.0  # underground/in-air (Dig/Fly): the attack misses
+        if move["type"] == "ground" and dfn.item == "airballoon":
+            return 0.0  # Air Balloon: immune to Ground moves until it pops
         if ABILITY_IMMUNE.get(dfn.ability) == move["type"]:
             return 0.0  # Levitate / Flash Fire / Water Absorb / ...
         if effectiveness(move["type"], dfn.types) == 0:
@@ -263,10 +268,11 @@ class SimState:
             return
         if norm_name(move.get("name", "")) in ("futuresight", "doomdesire"):
             return  # delayed 2 turns — no immediate effect a 1-ply search can price
-        if me.status in ("slp", "frz") and me.sleep_turns < 3:
-            # immobilized (guaranteed wake after 3 sleep turns) — moves fail...
+        if me.status in ("slp", "frz"):
+            # asleep/frozen at turn start: the move fails (can't rely on waking) —
+            # only Sleep Talk still acts, calling one of the mon's other moves
             if me.status == "slp" and norm_name(move.get("name", "")) == "sleeptalk":
-                move = self._sleep_talk_proxy(side)  # ...except Sleep Talk
+                move = self._sleep_talk_proxy(side)
                 if move is None:
                     return
             else:
@@ -508,7 +514,9 @@ def moves_for(mon: dict, snap: dict | None = None, side: str | None = None,
         moves = locked or moves
     if "taunt" in volatiles:
         moves = [m for m in moves if m["category"] != "Status"] or moves
-    if norm_name(mon.get("item", "")).startswith("choice") and last:
+    # Choice items lock into the last move used — via predicted_item, so we stay
+    # consistent with the damage engine (which already assumes the Choice boost)
+    if predicted_item(mon).startswith("choice") and last:
         locked = [m for m in moves if norm_name(m["name"]) == last]
         moves = locked or moves
 
@@ -518,28 +526,34 @@ def moves_for(mon: dict, snap: dict | None = None, side: str | None = None,
         opp_entry = next((m for m in (game or {}).get("roster", {}).get(opp, [])
                           if m.get("active")), {})
         opp_underground = "semiinvuln" in (opp_entry.get("volatiles") or [])
+        opp_item = "" if opp_entry.get("item_consumed") else norm_name(opp_entry.get("item", ""))
+        opp_ground_immune = (opp_item == "airballoon"
+                             or norm_name(opp_entry.get("ability", "")) == "levitate")
         status = mon.get("status", "")
-        useful = []
-        for m in moves:
+
+        def soft_drop(m):  # never empties the list on its own (keeps a fallback)
             n = norm_name(m["name"])
             if (m.get("heal") or n == "rest") and mon["hp"] >= 0.99:
-                continue  # healing at full HP fails / does nothing
+                return True  # healing at full HP fails
             if is_pure_setup(m) and (status == "tox"
                                      or (status in ("psn", "brn") and mon["hp"] < 0.5)):
-                continue  # don't set up while dying to residual damage
-            if (m["category"] != "Status" and m.get("power", 0) > 0 and opp_types
-                    and effectiveness(m["type"], opp_types) == 0):
-                continue  # the opponent is immune — clicking it whiffs
-            if (opp_underground and m["category"] != "Status"
-                    and n not in ("earthquake", "magnitude")):
-                continue  # target is underground/in-air (Dig/Fly) — attack misses
+                return True  # don't set up while dying to residual damage
             sc = m.get("side_condition")
-            if sc in HAZARD_MAX and snap[f"{opp}_hazard_{sc}"] >= HAZARD_MAX[sc]:
-                continue  # hazard already at max layers
-            if sc in SCREENS and snap[f"{side}_screen_{sc}"]:
-                continue  # screen already up
-            useful.append(m)
-        moves = useful or moves
+            return (sc in HAZARD_MAX and snap[f"{opp}_hazard_{sc}"] >= HAZARD_MAX[sc]) \
+                or (sc in SCREENS and snap[f"{side}_screen_{sc}"])
+
+        def whiffs(m):  # the move literally does nothing — may leave only switches
+            if m["category"] == "Status" or not m.get("power", 0):
+                return False
+            n = norm_name(m["name"])
+            if opp_underground and n not in ("earthquake", "magnitude"):
+                return True
+            if opp_types and effectiveness(m["type"], opp_types) == 0:
+                return True
+            return m["type"] == "ground" and opp_ground_immune
+
+        soft = [m for m in moves if not soft_drop(m)] or moves
+        moves = [m for m in soft if not whiffs(m)]  # may be empty -> switch instead
     return moves
 
 
@@ -547,9 +561,12 @@ def player_actions(game: dict, side: str) -> list[dict]:
     roster = game["roster"][side]
     snap = game["snapshots"][-1] if game.get("snapshots") else None
     me = next((m for m in roster if m["active"]), None)
+    can_switch = any(not m["fainted"] and not m["active"] and m["hp"] > 0 for m in roster)
     acts = []
     if me and not me["fainted"]:
         moves = moves_for(me, snap, side, game)
+        if not moves and not can_switch:
+            moves = moves_for(me)  # trapped and every move whiffs: must click something
         for move in moves:
             acts.append({"kind": "move", "label": move["name"], "move": move})
         # Terastallizing is a once-per-battle action taken alongside a move

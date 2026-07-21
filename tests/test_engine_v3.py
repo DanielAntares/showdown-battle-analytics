@@ -186,12 +186,17 @@ def test_screen_and_weather_expiry_in_next_snapshot():
     assert out2["p1_screen_reflect"] == 1
 
 
-def test_sleep_counter_wakes_after_three():
-    game, snap = _sim_1v1("Kingambit", "Dondozo", p1_status="slp")
+def test_asleep_mon_cannot_attack_regardless_of_count():
+    # a mon that is 'slp' at turn start is asleep, even at a high sleep count
+    # (Rest/Sleep Talk loops keep re-sleeping) — only Sleep Talk acts
+    game, snap = _sim_1v1("Dondozo", "Kingambit", p1_status="slp")
     game["roster"]["p1"][0]["sleep_turns"] = 3
     sim = SimState(game, snap)
-    sim.use_move("p1", _mv("Kowtow Cleave"))
-    assert sim.active["p2"].hp < 1.0  # slept 3 turns: acts again
+    sim.use_move("p1", _mv("Body Press"))
+    assert sim.active["p2"].hp == 1.0  # asleep: Body Press fails
+    sim2 = SimState(game, snap)
+    sim2.use_move("p1", _mv("Sleep Talk"))
+    assert sim2.active["p2"].hp < 1.0  # Sleep Talk still calls a move
 
 
 def test_semi_invulnerable_target_cannot_be_hit():
@@ -219,6 +224,34 @@ def test_attacks_dropped_vs_underground_opponent():
     names = [m["name"] for m in moves_for(game["roster"]["p1"][0], snap, "p1", game)]
     assert "Psycho Boost" not in names        # would miss the underground target
     assert "Stealth Rock" in names and "Spikes" in names  # hazards still useful
+
+
+def test_choice_lock_into_immune_leaves_only_switches():
+    # Kyurem (predicted Choice Specs) locked into Draco Meteor vs a Fairy -> the
+    # move is immune, so moves_for returns nothing (advisor must switch)
+    _, snap = _sim_1v1("Kyurem", "Hatterene")
+    game = {"roster": {
+        "p1": [_mon("Kyurem", last_move="Draco Meteor",
+                    moves=["Draco Meteor", "Freeze-Dry", "Earth Power"])],
+        "p2": [_mon("Hatterene", active=True)]}, "snapshots": [snap]}
+    assert moves_for(game["roster"]["p1"][0], snap, "p1", game) == []
+    # locked into a move that DOES hit -> that move is kept
+    game["roster"]["p1"][0]["last_move"] = "Freeze-Dry"
+    names = [m["name"] for m in moves_for(game["roster"]["p1"][0], snap, "p1", game)]
+    assert names == ["Freeze-Dry"]
+
+
+def test_air_balloon_grants_ground_immunity():
+    game, snap = _sim_1v1("Great Tusk", "Heatran")
+    sim = SimState(game, snap)
+    sim.active["p2"].item = "airballoon"
+    assert sim.damage_fraction("p1", _mv("Earthquake")) == 0.0  # immune while intact
+    # a popped balloon (item consumed) no longer protects
+    _, snap2 = _sim_1v1("Great Tusk", "Heatran")
+    game2 = {"roster": {"p1": [_mon("Great Tusk", moves=["Earthquake"])],
+                        "p2": [_mon("Heatran", active=True, item="", item_consumed=True)]},
+             "snapshots": [snap2]}
+    assert "Earthquake" in [m["name"] for m in moves_for(game2["roster"]["p1"][0], snap2, "p1", game2)]
 
 
 def test_no_setup_while_dying_to_poison():

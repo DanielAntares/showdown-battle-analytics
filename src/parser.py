@@ -33,6 +33,7 @@ class Pokemon:
     uses: dict = field(default_factory=dict)  # move -> times used (PP tracking)
     sleep_turns: int = 0
     item: str = ""     # revealed held item ("" = unknown)
+    item_consumed: bool = False  # item was used/knocked/popped -> now has none
     ability: str = ""  # revealed ability ("" = unknown)
 
 
@@ -236,15 +237,20 @@ class BattleParser:
             self.sides[_side_of(p[2])].volatiles.discard(cond)
             if cond in ("futuresight", "doomdesire"):  # resolved on the target's slot
                 self.sides["p1" if _side_of(p[2]) == "p2" else "p2"].future_pending = False
-        elif cmd in ("-item", "-enditem"):
+        elif cmd == "-item":
             if mon := self._mon(p[2]):
-                mon.item = p[3]  # item name; revealed by Knock Off, Boots proc, etc.
+                mon.item, mon.item_consumed = p[3], False  # item revealed / gained
+        elif cmd == "-enditem":
+            if mon := self._mon(p[2]):
+                mon.item, mon.item_consumed = "", True  # consumed / knocked / popped
         elif cmd == "-ability":
             if mon := self._mon(p[2]):
                 mon.ability = p[3]
         elif cmd == "-status":
             if mon := self._mon(p[2]):
                 mon.status = p[3]
+                if p[3] == "slp":
+                    mon.sleep_turns = 0  # fresh sleep (e.g. a new Rest) resets the count
         elif cmd == "-curestatus":
             if mon := self._mon(p[2]):
                 mon.status = ""
@@ -353,7 +359,8 @@ def game_state(parser: BattleParser, id: str | None = None,
             sid: [{"species": m.species, "hp": m.hp, "status": m.status,
                    "fainted": m.fainted, "revealed": m.revealed,
                    "active": key == side.active, "moves": sorted(m.moves),
-                   "item": m.item, "ability": m.ability, "tera": m.tera,
+                   "item": m.item, "item_consumed": m.item_consumed,
+                   "ability": m.ability, "tera": m.tera,
                    "uses": dict(m.uses), "sleep_turns": m.sleep_turns,
                    "volatiles": sorted(side.volatiles) if key == side.active else [],
                    "last_move": side.last_move if key == side.active else "",
