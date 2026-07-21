@@ -389,11 +389,23 @@ class SimState:
                 self.snap[f"{side}_fainted"] += 1
 
     def _replacement(self, side: str, fainted_species: str) -> dict | None:
-        """The mon that would be forced in after a faint — proxied by the
-        healthiest living benched Pokémon (we can't know the opponent's choice)."""
+        """The mon forced in after a faint. We can't know the real choice, so we
+        assume the sensible one: the living benched Pokémon that best resists the
+        opposing active's STAB (their best defensive answer), health breaking ties.
+        Deterministic and realistic — far better than an arbitrary 'healthiest'."""
         bench = [m for m in self.rosters.get(side, [])
                  if not m["fainted"] and m["hp"] > 0 and m["species"] != fainted_species]
-        return max(bench, key=lambda m: m["hp"]) if bench else None
+        if not bench:
+            return None
+        atk = self.active[self._opp(side)]
+        atk_types = atk.stab_types or set(atk.types)
+
+        def vulnerability(m):
+            dex = lookup(m["species"])
+            types = dex["types"] if dex else []
+            return max((effectiveness(t, types) for t in atk_types), default=1.0)
+
+        return min(bench, key=lambda m: (vulnerability(m), -m["hp"]))
 
     def to_snapshot(self) -> dict:
         out = dict(self.snap)
