@@ -79,7 +79,19 @@ BOOST_STATS = ("atk", "def", "spa", "spd", "spe")
 HAZARDS = ("stealthrock", "spikes", "toxicspikes", "stickyweb")
 HAZARD_MAX = {"stealthrock": 1, "spikes": 3, "toxicspikes": 2, "stickyweb": 1}
 SCREENS = ("reflect", "lightscreen", "auroraveil", "tailwind")
-STATUS_IMMUNE = {"brn": "fire", "par": "electric", "tox": "steel", "psn": "steel"}
+# types that cannot receive a given major status (independent of the move's type)
+STATUS_IMMUNE = {"brn": {"fire"}, "par": {"electric"}, "frz": {"ice"},
+                 "tox": {"steel", "poison"}, "psn": {"steel", "poison"}}
+
+
+def status_lands(inflicts: str, move_type: str, target_types) -> bool:
+    """Whether a status move would actually apply: the move's type must not be
+    immune (Thunder Wave/Electric vs Ground) and the target's type must be able
+    to take the status (Fire can't burn, Steel/Poison can't be poisoned, ...)."""
+    tt = target_types or []
+    if effectiveness(move_type, tt) == 0:
+        return False
+    return not any(t in STATUS_IMMUNE.get(inflicts, ()) for t in tt)
 
 
 def boost_mult(stage: int) -> float:
@@ -322,12 +334,12 @@ class SimState:
             # meaningful secondary status (Scald burn, Nuzzle para, ...)
             if (dealt > 0 and move.get("sec_status") and move.get("sec_chance", 0) >= 30
                     and not opp.status and not opp.fainted
-                    and STATUS_IMMUNE.get(move["sec_status"]) not in opp.types):
+                    and not any(t in STATUS_IMMUNE.get(move["sec_status"], ()) for t in opp.types)):
                 opp.status = move["sec_status"]
                 self.snap[f"{opp_side}_statused"] += 1
             return
         if move.get("inflicts") and not opp.status and not opp.fainted \
-                and STATUS_IMMUNE.get(move["inflicts"]) not in opp.types:
+                and status_lands(move["inflicts"], move["type"], opp.types):
             terrain = self.snap.get("terrain", "")
             terrain_blocked = _grounded(opp) and (
                 terrain == "mistyterrain"
@@ -540,10 +552,13 @@ def moves_for(mon: dict, snap: dict | None = None, side: str | None = None,
         status = mon.get("status", "")
 
         def no_effect(m):  # a status move that will simply fail
-            if m["category"] != "Status":
+            if m["category"] != "Status" or not m.get("inflicts"):
                 return False
-            # a fresh major status can't be applied to an already-statused target
-            return bool(m.get("inflicts")) and bool(opp_status)
+            if opp_status:
+                return True  # can't apply a fresh major status over an existing one
+            # the move's type must connect AND the target's type must take the status
+            # (Thunder Wave/Electric vs Ground, Will-O-Wisp vs Fire, Toxic vs Steel...)
+            return not status_lands(m["inflicts"], m["type"], opp_types)
 
         def soft_drop(m):  # never empties the list on its own (keeps a fallback)
             n = norm_name(m["name"])

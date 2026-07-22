@@ -243,6 +243,22 @@ def test_ability_immunity_pruned_comprehensively():
     assert "Ice Spinner" in names
 
 
+def test_status_move_pruned_when_target_type_immune():
+    # Thunder Wave (Electric) does nothing to Clodsire (Poison/Ground) — Ground
+    # is immune to Electric moves. Also Will-O-Wisp vs Fire, Toxic vs Steel.
+    from src.advisor import status_lands
+    assert not status_lands("par", "electric", ["poison", "ground"])  # Ground immune
+    assert not status_lands("brn", "fire", ["fire", "flying"])        # Fire can't burn
+    assert not status_lands("tox", "poison", ["steel"])               # Steel can't poison
+    assert status_lands("par", "electric", ["water"])                 # lands normally
+    _, snap = _sim_1v1("Slowking-Galar", "Clodsire")
+    game = {"roster": {
+        "p1": [_mon("Slowking-Galar", moves=["Thunder Wave", "Chilly Reception"])],
+        "p2": [_mon("Clodsire", active=True)]}, "snapshots": [snap]}
+    names = [m["name"] for m in moves_for(game["roster"]["p1"][0], snap, "p1", game)]
+    assert "Thunder Wave" not in names
+
+
 def test_status_move_pruned_when_target_already_statused():
     _, snap = _sim_1v1("Slowking-Galar", "Dragapult")  # non-Steel: Sludge Bomb connects
     snap["p2_active_status"] = "par"
@@ -331,11 +347,12 @@ def test_ko_promotes_replacement():
 def test_immune_move_pruned():
     _, snap = _sim_1v1("Slowking-Galar", "Iron Treads")  # snap matches roster below
     game = {"roster": {
-        "p1": [_mon("Slowking-Galar", moves=["Sludge Bomb", "Thunder Wave"])],
+        "p1": [_mon("Slowking-Galar", moves=["Sludge Bomb", "Thunder Wave", "Chilly Reception"])],
         "p2": [_mon("Iron Treads", active=True)]}, "snapshots": [snap]}
     names = [m["name"] for m in moves_for(game["roster"]["p1"][0], snap, "p1", game)]
-    assert "Sludge Bomb" not in names  # Poison is immune vs Ground/Steel
-    assert "Thunder Wave" in names
+    assert "Sludge Bomb" not in names   # Poison immune vs Ground/Steel
+    assert "Thunder Wave" not in names  # Electric immune vs the Ground typing
+    assert "Chilly Reception" in names  # a pivot move is unaffected
 
 
 def test_immune_pruning_respects_tera():
