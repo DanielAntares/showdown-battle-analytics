@@ -12,7 +12,8 @@ import plotly.graph_objects as go
 import requests
 import streamlit as st
 
-from src.advisor import advise_search, recommend_lead
+from src.advisor import (active_pivot_move, advise_search, pivot_targets,
+                         recommend_lead)
 from src.common import ROOT
 from src.movesets import moveset_with_probs, predict_spread, species_set
 from src.live import LiveBattle, find_user_battle, list_battles
@@ -57,6 +58,19 @@ def analyze(replay_ref: str):
     return game, probs
 
 
+def _advice_signature(game: dict) -> str:
+    """Everything the advisor's output depends on, compressed to a string — so the
+    3s live refresh can skip recomputing the search when nothing has changed."""
+    snap = game["snapshots"][-1]
+    parts = [str(snap.get("turn")), str(snap.get("weather")), str(snap.get("terrain"))]
+    for s in ("p1", "p2"):
+        for m in game["roster"][s]:
+            parts.append(f"{m['species']}|{m['hp']:.3f}|{m['status']}|{int(m['fainted'])}"
+                         f"|{int(m['active'])}|{m.get('tera', '')}|{m.get('item', '')}"
+                         f"|{','.join(m.get('moves', ()))}")
+    return "¶".join(parts)
+
+
 def render_advisor(game: dict, names: dict, key_prefix: str) -> None:
     """Best-action search: 1-ply minimax, or optional multi-turn deep search."""
     c1, c2 = st.columns(2)
@@ -71,20 +85,34 @@ def render_advisor(game: dict, names: dict, key_prefix: str) -> None:
                              "chip — but takes a couple of seconds.")
     side = "p1" if side_name == names["p1"] else "p2"
     booster, meta = cached_model()
-    if mode.startswith("Deep"):
-        with st.spinner("searching several turns ahead…"):
-            out = deep_search(game, side, booster, meta, depth=2, rollout=3, top_k=3)
-        engine_note = ("multi-turn maximin search (horizon ≈ 5 turns): a depth-2 "
-                       "adversarial tree over each side's most promising moves, extended "
-                       "by a greedy rollout, with every turn played out on the damage "
-                       "engine and the resulting positions scored by the win-prob model.")
+    # The live panel re-runs every 3s to refresh the chart; the search is far too
+    # expensive to redo each tick. Cache it on a signature of the battle state so
+    # it only recomputes when something actually changed (a real turn, HP, faint).
+    sig = (side, mode, _advice_signature(game))
+    ckey = f"{key_prefix}_advcache"
+    cached = st.session_state.get(ckey)
+    if cached and cached["sig"] == sig:
+        out, engine_note, pivot_df = cached["out"], cached["note"], cached["pivot"]
     else:
-        with st.spinner("simulating action matrix…"):
-            out = advise_search(game, side, booster, meta, snapshot_features)
-        engine_note = ("1-ply minimax over every (action × opponent response) pair, each "
-                       "simulated with a level-100 damage engine (STAB, type chart, boosts, "
-                       "burn/paralysis, screens, weather, hazard chip) and scored by the "
-                       "win-probability model.")
+        if mode.startswith("Deep"):
+            with st.spinner("searching several turns ahead…"):
+                out = deep_search(game, side, booster, meta, depth=2, rollout=3, top_k=3)
+            engine_note = ("multi-turn maximin search (horizon ≈ 5 turns): a depth-2 "
+                           "adversarial tree over each side's most promising moves, extended "
+                           "by a greedy rollout, with every turn played out on the damage "
+                           "engine and the resulting positions scored by the win-prob model.")
+        else:
+            with st.spinner("simulating action matrix…"):
+                out = advise_search(game, side, booster, meta, snapshot_features)
+            engine_note = ("1-ply minimax over every (action × opponent response) pair, each "
+                           "simulated with a level-100 damage engine (STAB, type chart, boosts, "
+                           "burn/paralysis, screens, weather, hazard chip) and scored by the "
+                           "win-probability model.")
+        pm = active_pivot_move(game, side)
+        pivot_df = (pivot_targets(game, side, booster, meta, snapshot_features, pm)
+                    if pm else None)
+        st.session_state[ckey] = {"sig": sig, "out": out, "note": engine_note,
+                                  "pivot": pivot_df}
     if not len(out):
         st.caption("no legal actions to evaluate (active Pokémon fainted or unknown)")
         return
@@ -95,6 +123,11 @@ def render_advisor(game: dict, names: dict, key_prefix: str) -> None:
         worst_case=lambda d: d.worst_case.map("{:.0%}".format),
         average=lambda d: d.average.map("{:.0%}".format)),
         hide_index=True, width="stretch")
+    if pivot_df is not None and len(pivot_df):
+        top = pivot_df.iloc[0]
+        rest = " · ".join(f"{r.target} ({r.win:.0%})" for _, r in pivot_df.iloc[1:3].iterrows())
+        st.info(f"↩️ **Pivot follow-up** — if you U-turn/Volt Switch out, bring in "
+                f"**{top.target}** ({top.win:.0%} win after)" + (f"  \nthen: {rest}" if rest else ""))
     st.caption("⚠️ " + engine_note + " Unrevealed moves and EV/nature spreads are "
                "predicted from ladder usage stats (see the sets below).")
 

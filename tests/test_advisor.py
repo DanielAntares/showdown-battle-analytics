@@ -224,3 +224,40 @@ def test_advise_search_on_fixture():
     assert (out.worst_case <= out.average + 1e-9).all()
     assert list(out.worst_case) == sorted(out.worst_case, reverse=True)
     assert player_actions(game, "p2")  # options exist at turn 10
+
+
+def _pivot_game(active, bench, p2_active, active_moves):
+    _, snap = _sim_1v1(active, p2_active)
+    roster = {"p1": [_mon(active, active=True, moves=active_moves)]
+                     + [_mon(b, active=False) for b in bench],
+              "p2": [_mon(p2_active, active=True)]}
+    snap["p1_hp_total"] = float(1 + len(bench))
+    snap["p1_healthy"] = 1 + len(bench)
+    snap["p2_healthy"] = 1
+    return {"roster": roster, "snapshots": [snap], "teams": {}}
+
+
+def test_active_pivot_move_detects_uturn():
+    from src.advisor import active_pivot_move
+    game = _pivot_game("Cinderace", ["Kyurem"], "Gholdengo", ["Pyro Ball", "U-turn"])
+    pm = active_pivot_move(game, "p1")
+    assert pm and pm["name"] == "U-turn"
+    # a mon with no pivot move returns None
+    game2 = _pivot_game("Great Tusk", ["Kyurem"], "Gholdengo", ["Earthquake", "Ice Spinner"])
+    assert active_pivot_move(game2, "p1") is None
+
+
+def test_pivot_targets_ranks_bench():
+    from src.advisor import active_pivot_move, pivot_targets
+    from src.predict import load_model, snapshot_features
+    booster, meta = load_model()
+    game = _pivot_game("Cinderace", ["Kyurem", "Dondozo"], "Gholdengo",
+                       ["Pyro Ball", "U-turn"])
+    pm = active_pivot_move(game, "p1")
+    df = pivot_targets(game, "p1", booster, meta, snapshot_features, pm)
+    assert set(df.target) == {"Kyurem", "Dondozo"}   # only the benched mons
+    assert df.win.between(0, 1).all()
+    assert list(df.win) == sorted(df.win, reverse=True)  # best-first
+    # nothing to bring in -> empty frame, no crash
+    solo = _pivot_game("Cinderace", [], "Gholdengo", ["Pyro Ball", "U-turn"])
+    assert len(pivot_targets(solo, "p1", booster, meta, snapshot_features, pm)) == 0

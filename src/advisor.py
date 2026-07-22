@@ -660,6 +660,57 @@ def advise_search(game: dict, side: str, booster, meta, snapshot_features) -> pd
                                           ignore_index=True)
 
 
+# moves that switch the user out after resolving — the follow-up mon matters as
+# much as the move, so the advisor should recommend who to bring in
+PIVOT_MOVES = {"uturn", "voltswitch", "flipturn", "partingshot", "teleport",
+               "chillyreception", "batonpass", "shedtail"}
+
+
+def active_pivot_move(game: dict, side: str) -> dict | None:
+    """The pivot move `side`'s active can legally use this turn, if any."""
+    snap = game["snapshots"][-1] if game.get("snapshots") else None
+    me = next((m for m in game["roster"][side] if m["active"]), None)
+    if not me or me["fainted"]:
+        return None
+    for mv in moves_for(me, snap, side, game):
+        if norm_name(mv["name"]) in PIVOT_MOVES:
+            return mv
+    return None
+
+
+def pivot_targets(game: dict, side: str, booster, meta, snapshot_features,
+                  pivot_move: dict | None = None) -> pd.DataFrame:
+    """Rank the Pokémon `side` should bring in after a pivot move. The incoming
+    mon arrives for free — the opponent already spent its turn — so each candidate
+    is scored by the win-prob model on the post-pivot board with no switch tempo
+    cost. Returns [target, win] best-first."""
+    snap = game["snapshots"][-1]
+    opp = "p2" if side == "p1" else "p1"
+    base = dict(snap)
+    if pivot_move is not None and pivot_move.get("power"):
+        sim = SimState(game, snap)
+        sim.use_move(side, pivot_move)
+        opp_hp = sim.active[opp].hp
+        if opp_hp > 1e-6:  # if the pivot KOs, the incoming faces an unknown mon — skip chip
+            base[f"{opp}_hp_total"] = snap[f"{opp}_hp_total"] - (snap[f"{opp}_active_hp"] - opp_hp)
+            base[f"{opp}_active_hp"] = max(opp_hp, 0.0)
+    cands = [m for m in game["roster"][side]
+             if not m["fainted"] and not m["active"] and m["hp"] > 0]
+    if not cands:
+        return pd.DataFrame(columns=["target", "win"])
+    snaps = []
+    for m in cands:
+        s = dict(base)
+        s[f"{side}_active_species"] = m["species"]
+        s[f"{side}_active_hp"] = m["hp"]
+        s[f"{side}_active_status"] = m["status"]
+        snaps.append(s)
+    p1 = calibrate(booster.predict(snapshot_features({**game, "snapshots": snaps}, meta)), meta)
+    win = np.asarray(p1 if side == "p1" else 1 - p1)
+    rows = [{"target": m["species"], "win": float(w)} for m, w in zip(cands, win)]
+    return pd.DataFrame(rows).sort_values("win", ascending=False, ignore_index=True)
+
+
 def _opening_snapshot(n_mine: int, n_opp: int) -> dict:
     """A fresh turn-1 board (both teams full, nothing revealed but the leads)."""
     s = {"turn": 1, "p1_active_species": "", "p2_active_species": "",
