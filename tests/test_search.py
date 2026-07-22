@@ -5,12 +5,39 @@ deep_search returns a well-formed, sorted ranking."""
 import json
 from pathlib import Path
 
+from src.advisor import is_pure_setup
 from src.parser import parse_replay
+from src.pokedex import move_info
 from src.predict import load_model, snapshot_features
-from src.search import (deep_search, greedy_action, is_over, score_batch, step,
-                        top_actions)
+from src.search import (_move_value, deep_search, greedy_action, is_over,
+                        score_batch, step, top_actions)
 
 FIXTURES = sorted((Path(__file__).parent / "fixtures").glob("*.json"))
+
+
+def _mon(species, active=False, **kw):
+    base = {"species": species, "hp": 1.0, "status": "", "fainted": False,
+            "active": active, "moves": [], "item": "", "volatiles": [], "last_move": ""}
+    return {**base, **kw}
+
+
+def _versus(p1_active, p2_active):
+    """A minimal two-mon-per-side game with the chosen actives, enough for the
+    search's heuristics (player_actions, moves_for, damage engine)."""
+    roster = {"p1": [_mon(p1_active, active=True), _mon("Corviknight")],
+              "p2": [_mon(p2_active, active=True), _mon("Great Tusk")]}
+    snap = {"turn": 10, "weather": "", "terrain": "", "trickroom": 0}
+    for s in ("p1", "p2"):
+        act = roster[s][0]["species"]
+        snap.update({f"{s}_active_species": act, f"{s}_active_hp": 1.0,
+                     f"{s}_active_status": "", f"{s}_hp_total": 2.0,
+                     f"{s}_fainted": 0, f"{s}_healthy": 2, f"{s}_statused": 0})
+        snap.update({f"{s}_boost_{b}": 0 for b in ("atk", "def", "spa", "spd", "spe")})
+        snap.update({f"{s}_hazard_{h}": 0 for h in
+                     ("stealthrock", "spikes", "toxicspikes", "stickyweb")})
+        snap.update({f"{s}_screen_{sc}": 0 for sc in
+                     ("reflect", "lightscreen", "auroraveil", "tailwind")})
+    return {"roster": roster, "snapshots": [snap]}
 
 
 def _load(idx=0, up_to_turn=8):
@@ -107,6 +134,34 @@ def test_deep_search_is_deterministic():
     a = deep_search(game, "p1", booster, meta, **kw)
     b = deep_search(game, "p1", booster, meta, **kw)
     assert a.equals(b)
+
+
+def test_nasty_plot_is_pure_setup():
+    assert is_pure_setup(dict(move_info("Nasty Plot"), name="Nasty Plot"))
+    assert not is_pure_setup(dict(move_info("Make It Rain"), name="Make It Rain"))
+
+
+def test_setup_valued_high_when_safe_low_when_threatened():
+    """The opponent-model heuristic must rate a setup move by how safe it is:
+    setting up in front of a foe that can't hurt you is excellent; setting up in
+    front of one that OHKOs you is near-worthless."""
+    np_move = dict(move_info("Nasty Plot"), name="Nasty Plot")
+    # Dondozo (Body Press = Fighting) cannot touch Gholdengo (Ghost) -> safe setup
+    safe = _move_value(_versus("Dondozo", "Gholdengo"), "p2", np_move)
+    # Cinderace (Pyro Ball = Fire) OHKOs Gholdengo (Steel) -> setting up is folly
+    threatened = _move_value(_versus("Cinderace", "Gholdengo"), "p2", np_move)
+    assert safe > 0.3
+    assert threatened <= 0.1
+    assert safe > threatened
+
+
+def test_opponent_sets_up_on_a_passive_wall():
+    """Regression for the Gholdengo ping-pong: a setup sweeper facing a wall that
+    can't threaten it should be expected to boost, so the search stops treating
+    that wall as a safe answer."""
+    game = _versus("Dondozo", "Gholdengo")
+    best = greedy_action(game, "p2")
+    assert best["kind"] == "move" and is_pure_setup(best["move"])
 
 
 def test_deep_search_matches_advisor_action_set():

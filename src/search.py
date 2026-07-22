@@ -22,7 +22,8 @@ turn, so the output can feed straight back in for the next turn.
 import numpy as np
 import pandas as pd
 
-from src.advisor import SimState, effectiveness, lookup, player_actions
+from src.advisor import (SimState, effectiveness, is_pure_setup, lookup,
+                         moves_for, player_actions)
 from src.predict import calibrate, snapshot_features
 
 
@@ -79,15 +80,40 @@ def is_over(game: dict) -> bool:
 
 # ---- cheap action heuristics (used to prune/order; no model calls) -----------
 
+def _incoming_threat(state: dict, side: str) -> float:
+    """Largest HP fraction the foe's active can take off `side`'s active in one
+    hit — how much danger `side` is in right now."""
+    opp = _other(side)
+    snap = state["snapshots"][-1]
+    foe = next((m for m in state["roster"][opp] if m["active"]), None)
+    if not foe:
+        return 0.0
+    sim = SimState(state, snap)
+    return max((sim.damage_fraction(opp, mv) for mv in moves_for(foe, snap, opp, state)
+                if mv.get("power")), default=0.0)
+
+
 def _move_value(state: dict, side: str, mv: dict) -> float:
     """Rough goodness of a move for ordering: damage fraction, KO bonus, or a
     small value for useful status moves."""
     snap = state["snapshots"][-1]
+    if is_pure_setup(mv):
+        # A free setup turn compounds into a sweep — the model *does* see boost
+        # stages, and step() carries them forward. Value it by how safe it is:
+        # setting up in front of a foe that can't threaten you is one of the
+        # strongest things to do; setting up into a likely KO is near-worthless.
+        # This is what lets the search anticipate an opponent Nasty Plot / Dragon
+        # Dance on a passive wall, instead of reading that wall as "safe".
+        my_hp = snap[f"{side}_active_hp"]
+        threat = _incoming_threat(state, side)
+        if threat >= my_hp:
+            return 0.05
+        return 0.45 * (1.0 - threat / max(my_hp, 1e-6))
     if mv.get("category") == "Status" or not mv.get("power", 0):
         return 0.15
     sim = SimState(state, snap)
     dmg = sim.damage_fraction(side, mv)
-    opp = "p2" if side == "p1" else "p1"
+    opp = _other(side)
     return dmg + (0.5 if dmg >= snap[f"{opp}_active_hp"] else 0.0)  # reward likely KOs
 
 
