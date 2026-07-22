@@ -1,10 +1,16 @@
 """Items, abilities, move mechanics, Tera, durations, counters in the engine."""
 
+import json
+from pathlib import Path
+
 import pytest
 
 from src.advisor import SimState, hazard_chip, moves_for, player_actions
+from src.parser import parse_replay
 from src.pokedex import move_info
 from tests.test_advisor import _mon, _sim_1v1
+
+FIXTURES = sorted((Path(__file__).parent / "fixtures").glob("*.json"))
 
 
 def _mv(name):
@@ -224,6 +230,43 @@ def test_attacks_dropped_vs_underground_opponent():
     names = [m["name"] for m in moves_for(game["roster"]["p1"][0], snap, "p1", game)]
     assert "Psycho Boost" not in names        # would miss the underground target
     assert "Stealth Rock" in names and "Spikes" in names  # hazards still useful
+
+
+def test_ability_immunity_pruned_comprehensively():
+    # a predicted-Levitate opponent -> Ground moves dropped (not just Air Balloon)
+    _, snap = _sim_1v1("Great Tusk", "Rotom-Wash")  # Rotom-Wash: only ability = Levitate
+    game = {"roster": {
+        "p1": [_mon("Great Tusk", moves=["Headlong Rush", "Ice Spinner"])],
+        "p2": [_mon("Rotom-Wash", active=True)]}, "snapshots": [snap]}
+    names = [m["name"] for m in moves_for(game["roster"]["p1"][0], snap, "p1", game)]
+    assert "Headlong Rush" not in names   # Ground vs Levitate
+    assert "Ice Spinner" in names
+
+
+def test_status_move_pruned_when_target_already_statused():
+    _, snap = _sim_1v1("Slowking-Galar", "Dragapult")  # non-Steel: Sludge Bomb connects
+    snap["p2_active_status"] = "par"
+    game = {"roster": {
+        "p1": [_mon("Slowking-Galar", moves=["Thunder Wave", "Sludge Bomb"])],
+        "p2": [_mon("Dragapult", active=True, status="par")]}, "snapshots": [snap]}
+    names = [m["name"] for m in moves_for(game["roster"]["p1"][0], snap, "p1", game)]
+    assert "Thunder Wave" not in names   # already paralyzed -> Thunder Wave would fail
+    assert "Sludge Bomb" in names
+
+
+def test_switch_carries_a_tempo_cost(monkeypatch):
+    import src.advisor as adv
+    from src.predict import load_model, snapshot_features
+    booster, meta = load_model()
+    game = parse_replay(json.loads(FIXTURES[0].read_text(encoding="utf-8")), up_to_turn=8)
+    monkeypatch.setattr(adv, "SWITCH_COST", 0.0)
+    free = adv.advise_search(game, "p1", booster, meta, snapshot_features).set_index("action")
+    monkeypatch.setattr(adv, "SWITCH_COST", 0.06)
+    costed = adv.advise_search(game, "p1", booster, meta, snapshot_features).set_index("action")
+    switches = [a for a in free.index if a.startswith("switch")]
+    assert switches, "expected some switch options in this position"
+    for a in switches:  # every switch scores strictly lower once the cost applies
+        assert costed.loc[a, "worst_case"] < free.loc[a, "worst_case"]
 
 
 def test_choice_lock_into_immune_leaves_only_switches():

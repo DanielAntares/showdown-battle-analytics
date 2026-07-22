@@ -38,6 +38,12 @@ ABILITY_IMMUNE = {"levitate": "ground", "flashfire": "fire", "wellbakedbody": "f
                   "motordrive": "electric", "sapsipper": "grass",
                   "eartheater": "ground"}
 SCREEN_DURATION, FIELD_DURATION = 5, 5
+# tempo cost of switching (win-prob points): the free turn given up plus hazard
+# chip and momentum the 1-ply search can't see. Applied symmetrically — my switch
+# costs me, and the opponent switching (e.g. to deny a KO) concedes tempo to me —
+# so the advisor curbs reflexive switching AND isn't fooled into thinking a KO is
+# worthless just because the opponent could pivot the target out.
+SWITCH_COST = 0.06
 
 
 def predicted_item(mon: dict) -> str:
@@ -47,21 +53,21 @@ def predicted_item(mon: dict) -> str:
         return ""
     if mon.get("item"):
         return norm_name(mon["item"])
-    entry = species_set(mon["species"])
+    entry = species_set(mon.get("species") or "")
     return entry["item"][0][0] if entry and entry.get("item") else ""
 
 
 def predicted_ability(mon: dict) -> str:
     if mon.get("ability"):
         return norm_name(mon["ability"])
-    entry = species_set(mon["species"])
+    entry = species_set(mon.get("species") or "")
     return entry["ability"][0][0] if entry and entry.get("ability") else ""
 
 
 def predicted_tera(mon: dict) -> str:
     if mon.get("tera"):
         return mon["tera"].lower()
-    entry = species_set(mon["species"])
+    entry = species_set(mon.get("species") or "")
     return entry["tera"][0][0] if entry and entry.get("tera") else ""
 
 
@@ -526,10 +532,18 @@ def moves_for(mon: dict, snap: dict | None = None, side: str | None = None,
         opp_entry = next((m for m in (game or {}).get("roster", {}).get(opp, [])
                           if m.get("active")), {})
         opp_underground = "semiinvuln" in (opp_entry.get("volatiles") or [])
-        opp_item = "" if opp_entry.get("item_consumed") else norm_name(opp_entry.get("item", ""))
-        opp_ground_immune = (opp_item == "airballoon"
-                             or norm_name(opp_entry.get("ability", "")) == "levitate")
+        # the opponent's effective ability/item — same values the damage engine
+        # scores with, so pruning stays consistent with what it computes as 0
+        opp_ability = predicted_ability(opp_entry)
+        opp_item = predicted_item(opp_entry)
+        opp_status = snap.get(f"{opp}_active_status", "")
         status = mon.get("status", "")
+
+        def no_effect(m):  # a status move that will simply fail
+            if m["category"] != "Status":
+                return False
+            # a fresh major status can't be applied to an already-statused target
+            return bool(m.get("inflicts")) and bool(opp_status)
 
         def soft_drop(m):  # never empties the list on its own (keeps a fallback)
             n = norm_name(m["name"])
@@ -538,19 +552,23 @@ def moves_for(mon: dict, snap: dict | None = None, side: str | None = None,
             if is_pure_setup(m) and (status == "tox"
                                      or (status in ("psn", "brn") and mon["hp"] < 0.5)):
                 return True  # don't set up while dying to residual damage
+            if no_effect(m):
+                return True  # e.g. Thunder Wave into an already-paralyzed target
             sc = m.get("side_condition")
             return (sc in HAZARD_MAX and snap[f"{opp}_hazard_{sc}"] >= HAZARD_MAX[sc]) \
                 or (sc in SCREENS and snap[f"{side}_screen_{sc}"])
 
-        def whiffs(m):  # the move literally does nothing — may leave only switches
+        def whiffs(m):  # zero-damage attack (any immunity source) — may leave only switches
             if m["category"] == "Status" or not m.get("power", 0):
                 return False
             n = norm_name(m["name"])
             if opp_underground and n not in ("earthquake", "magnitude"):
                 return True
             if opp_types and effectiveness(m["type"], opp_types) == 0:
-                return True
-            return m["type"] == "ground" and opp_ground_immune
+                return True  # type immunity (Ground->Flying, Dragon->Fairy, ...)
+            if ABILITY_IMMUNE.get(opp_ability) == m["type"]:
+                return True  # ability immunity (Levitate, Flash Fire, Water Absorb, ...)
+            return m["type"] == "ground" and opp_item == "airballoon"  # item immunity
 
         soft = [m for m in moves if not soft_drop(m)] or moves
         moves = [m for m in soft if not whiffs(m)]  # may be empty -> switch instead
@@ -603,8 +621,12 @@ def advise_search(game: dict, side: str, booster, meta, snapshot_features) -> pd
             snapshots.append(sim.to_snapshot())
     p1_win = calibrate(booster.predict(snapshot_features({**game, "snapshots": snapshots},
                                                          meta)), meta)
-    mine_win = p1_win if side == "p1" else 1 - p1_win
-    grid = np.asarray(mine_win).reshape(len(mine), len(theirs))
+    mine_win = np.asarray(p1_win if side == "p1" else 1 - p1_win)
+    # symmetric tempo adjustment: my switch costs me, the opponent's switch credits me
+    my_switch = np.array([SWITCH_COST if a["kind"] == "switch" else 0.0 for a in mine])
+    opp_switch = np.array([SWITCH_COST if b["kind"] == "switch" else 0.0 for b in theirs])
+    grid = np.clip(mine_win.reshape(len(mine), len(theirs))
+                   - my_switch[:, None] + opp_switch[None, :], 0.0, 1.0)
 
     rows = []
     for i, a in enumerate(mine):
