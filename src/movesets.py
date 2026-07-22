@@ -22,6 +22,7 @@ Usage (rebuild the asset):
 """
 
 import json
+from functools import lru_cache
 
 from src.common import ROOT, load_config
 from src.pokedex import STATS, load_moves, lookup, norm_name
@@ -56,8 +57,8 @@ def species_set(species: str) -> dict | None:
     return load_sets().get(norm_name(species))
 
 
-def predict_moves(species: str, revealed=(), k: int = 4) -> list[str]:
-    """Most likely k moves (as display names), always keeping revealed ones."""
+@lru_cache(maxsize=4096)
+def _predict_moves_cached(species: str, revealed: tuple, k: int) -> list[str]:
     revealed_ids = {norm_name(m) for m in revealed}
     entry = species_set(species)
     moves = load_moves()
@@ -71,6 +72,11 @@ def predict_moves(species: str, revealed=(), k: int = 4) -> list[str]:
             if mid not in revealed_ids and mid in moves and len(result) < k:
                 result.append(display(mid))
     return result
+
+
+def predict_moves(species: str, revealed=(), k: int = 4) -> list[str]:
+    """Most likely k moves (as display names), always keeping revealed ones."""
+    return _predict_moves_cached(species, tuple(revealed), k)
 
 
 def moveset_with_probs(species: str, k: int = TOP_MOVES) -> list[tuple[str, float]]:
@@ -89,6 +95,7 @@ def predict_spread(species: str) -> dict:
     return {"nature": "", "evs": [85, 85, 85, 85, 85, 85], "atk_iv": 31}
 
 
+@lru_cache(maxsize=2048)
 def real_stats(species: str) -> dict:
     """Level-100 stats from base + predicted EV spread + nature (IV 31, or 0 Atk)."""
     dex = lookup(species)

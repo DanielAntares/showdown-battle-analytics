@@ -128,6 +128,8 @@ class _Active:
         dex = lookup(mon["species"])
         self.orig_types = dex["types"] if dex else []
         tera = (mon.get("tera") or "").lower()
+        self.tera = tera  # persisted Tera type ("" if not yet used)
+        self.did_tera = False  # Tera'd this turn (for multi-turn state carry-forward)
         self.types = [tera] if tera else list(self.orig_types)  # already Tera'd?
         self.stab_types = set(self.orig_types) | ({tera} if tera else set())
         self.item = predicted_item(mon)
@@ -141,6 +143,8 @@ class _Active:
     def terastallize(self, tera_type: str) -> None:
         self.types = [tera_type]
         self.stab_types = set(self.orig_types) | {tera_type}
+        self.tera = tera_type
+        self.did_tera = True
 
 
 class SimState:
@@ -366,6 +370,9 @@ class SimState:
     def resolve(self, actions: dict) -> None:
         """Play one turn: switches first, then moves by priority and speed."""
         movers = []
+        # record what each side did (for multi-turn Choice/Encore locks + switch tracking)
+        self.acted = {side: ("switch", act["mon"]["species"]) if act["kind"] == "switch"
+                      else ("move", act["move"].get("name", "")) for side, act in actions.items()}
         attacking = {side: act["kind"] == "move"
                      and act["move"].get("category") != "Status"
                      and act["move"].get("power", 0) > 0

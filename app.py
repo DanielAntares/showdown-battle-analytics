@@ -17,6 +17,7 @@ from src.common import ROOT
 from src.movesets import moveset_with_probs, predict_spread, species_set
 from src.live import LiveBattle, find_user_battle, list_battles
 from src.parser import parse_replay
+from src.search import deep_search
 from src.predict import (actions_by_turn, fetch_replay, key_moments, load_model,
                          predict_game, snapshot_features, turn_story, user_replays)
 from src.teammates import TeammateModel
@@ -57,13 +58,33 @@ def analyze(replay_ref: str):
 
 
 def render_advisor(game: dict, names: dict, key_prefix: str) -> None:
-    """Best-action search: 1-ply minimax over the joint action matrix."""
-    side_name = st.radio("Options for", [names["p1"], names["p2"]],
-                         horizontal=True, key=f"{key_prefix}_side")
+    """Best-action search: 1-ply minimax, or optional multi-turn deep search."""
+    c1, c2 = st.columns(2)
+    with c1:
+        side_name = st.radio("Options for", [names["p1"], names["p2"]],
+                             horizontal=True, key=f"{key_prefix}_side")
+    with c2:
+        mode = st.radio("Look-ahead", ["Fast (1 turn)", "Deep (~5 turns)"],
+                        horizontal=True, key=f"{key_prefix}_depth",
+                        help="Deep search reasons several turns ahead — setup payoff, "
+                             "delayed KOs a Protect only postpones, compounding hazard "
+                             "chip — but takes a couple of seconds.")
     side = "p1" if side_name == names["p1"] else "p2"
     booster, meta = cached_model()
-    with st.spinner("simulating action matrix…"):
-        out = advise_search(game, side, booster, meta, snapshot_features)
+    if mode.startswith("Deep"):
+        with st.spinner("searching several turns ahead…"):
+            out = deep_search(game, side, booster, meta, depth=2, rollout=3, top_k=3)
+        engine_note = ("multi-turn maximin search (horizon ≈ 5 turns): a depth-2 "
+                       "adversarial tree over each side's most promising moves, extended "
+                       "by a greedy rollout, with every turn played out on the damage "
+                       "engine and the resulting positions scored by the win-prob model.")
+    else:
+        with st.spinner("simulating action matrix…"):
+            out = advise_search(game, side, booster, meta, snapshot_features)
+        engine_note = ("1-ply minimax over every (action × opponent response) pair, each "
+                       "simulated with a level-100 damage engine (STAB, type chart, boosts, "
+                       "burn/paralysis, screens, weather, hazard chip) and scored by the "
+                       "win-probability model.")
     if not len(out):
         st.caption("no legal actions to evaluate (active Pokémon fainted or unknown)")
         return
@@ -74,10 +95,7 @@ def render_advisor(game: dict, names: dict, key_prefix: str) -> None:
         worst_case=lambda d: d.worst_case.map("{:.0%}".format),
         average=lambda d: d.average.map("{:.0%}".format)),
         hide_index=True, width="stretch")
-    st.caption("⚠️ 1-ply minimax over every (action × opponent response) pair, each "
-               "simulated with a level-100 damage engine (STAB, type chart, boosts, "
-               "burn/paralysis, screens, weather, hazard chip) and scored by the "
-               "win-probability model. Unrevealed moves and EV/nature spreads are "
+    st.caption("⚠️ " + engine_note + " Unrevealed moves and EV/nature spreads are "
                "predicted from ladder usage stats (see the sets below).")
 
     with st.expander("🔮 Predicted sets in play (from ladder usage)"):
