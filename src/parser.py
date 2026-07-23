@@ -14,6 +14,8 @@ Known v1 limitations (all rare in Gen 9 OU): damage dealt to a Zoroark before
 (Psych Up) are ignored.
 """
 
+import html as _html
+import re
 from dataclasses import dataclass, field
 
 BOOST_STATS = ("atk", "def", "spa", "spd", "spe")
@@ -378,6 +380,32 @@ def game_state(parser: BattleParser, id: str | None = None,
         "snapshots": list(parser.snapshots),
         "events": dict(parser.events),
     }
+
+
+_LOG_SCRIPT = re.compile(
+    r'<script[^>]*class="[^"]*battle-log-data[^"]*"[^>]*>(.*?)</script>', re.S | re.I)
+
+
+def extract_log(text: str) -> str:
+    """Pull a battle log out of text the user supplies directly, so a battle that
+    can't be fetched (private, unlisted, never uploaded) can still be analyzed.
+
+    Accepts either the raw '|'-prefixed protocol lines copied from the client, or
+    the HTML file Showdown's "Download replay" button produces, which embeds the
+    same log in a <script class="battle-log-data"> block.
+    """
+    if not text:
+        return ""
+    if m := _LOG_SCRIPT.search(text):
+        text = _html.unescape(m.group(1))
+    lines = [ln for ln in (t.rstrip() for t in text.splitlines())
+             if ln.lstrip().startswith("|")]
+    return "\n".join(ln.lstrip() for ln in lines)
+
+
+def is_battle_log(log: str) -> bool:
+    """A log we can actually parse — it must identify players and have a turn."""
+    return "|player|" in log and "|turn|" in log
 
 
 def parse_replay(replay: dict, up_to_turn: int | None = None) -> dict:

@@ -96,3 +96,42 @@ def test_hazards_are_tracked():
                     s[f"p1_hazard_{hazard}"] + s[f"p2_hazard_{hazard}"] > 0
                     for s in game["snapshots"]
                 ), f"{path.stem}: {hazard} appears in the log but never in a snapshot"
+
+
+# ---- user-supplied logs (private / unlisted battles) -------------------------
+
+def _fixture_replay():
+    return json.loads(FIXTURES[0].read_text(encoding="utf-8"))
+
+
+def test_extract_log_from_pasted_lines():
+    from src.parser import extract_log, is_battle_log
+    raw = _fixture_replay()["log"]
+    log = extract_log(raw)
+    assert is_battle_log(log)
+    # a pasted log must reproduce the fetched replay's analysis exactly
+    assert parse_replay({"log": log})["n_turns"] == parse_replay(_fixture_replay())["n_turns"]
+
+
+def test_extract_log_from_downloaded_replay_html():
+    """Showdown's 'Download replay' embeds the (HTML-escaped) log in a script block."""
+    import html as _h
+    from src.parser import extract_log, is_battle_log
+    raw = _fixture_replay()["log"]
+    page = ('<html><body><script type="text/plain" class="battle-log-data">'
+            + _h.escape(raw) + '</script></body></html>')
+    log = extract_log(page)
+    assert is_battle_log(log)
+    got, want = parse_replay({"log": log}), parse_replay(_fixture_replay())
+    assert got["n_turns"] == want["n_turns"]
+    assert (got["p1_name"], got["p1_rating"]) == (want["p1_name"], want["p1_rating"])
+    assert got["winner"] == want["winner"]
+
+
+def test_extract_log_rejects_non_logs():
+    from src.parser import extract_log, is_battle_log
+    assert extract_log("") == ""
+    assert not is_battle_log(extract_log("just some text\nno protocol lines"))
+    # HTML chrome around the log is dropped, indentation tolerated
+    assert extract_log("  |turn|1\n<div>noise</div>\n  |player|p1|a|1|1500") == \
+        "|turn|1\n|player|p1|a|1|1500"

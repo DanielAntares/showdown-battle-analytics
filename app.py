@@ -17,7 +17,7 @@ from src.advisor import (active_pivot_move, advise_search, pessimism_for_elo,
 from src.common import ROOT
 from src.movesets import moveset_with_probs, predict_spread, species_set
 from src.live import LiveBattle, find_user_battle, list_battles
-from src.parser import parse_replay
+from src.parser import extract_log, is_battle_log, parse_replay
 from src.search import deep_search
 from src.predict import (actions_by_turn, fetch_replay, key_moments, load_model,
                          predict_game, snapshot_features, turn_story, user_replays)
@@ -53,6 +53,16 @@ def fetch_raw(replay_ref: str) -> dict:
 @st.cache_data(ttl=3600, show_spinner=False)
 def analyze(replay_ref: str):
     game = parse_replay(fetch_raw(replay_ref))
+    booster, meta = cached_model()
+    probs = predict_game(game, booster, meta)
+    return game, probs
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def analyze_log(log: str):
+    """Same analysis from a log the user supplied — no network, so it works on
+    private, unlisted, or never-uploaded battles."""
+    game = parse_replay({"log": log})
     booster, meta = cached_model()
     probs = predict_game(game, booster, meta)
     return game, probs
@@ -438,6 +448,40 @@ def render_history_browser() -> None:
                   on_click=pick_history_replay, args=(r["id"],))
 
 
+def _private_battle_input() -> str:
+    """Paste/upload path for battles the app can't fetch — private, unlisted, or
+    never uploaded. Returns a parseable log, or '' if nothing usable was given."""
+    with st.expander("🔒 Private or unlisted battle — analyze it from the log"):
+        st.markdown(
+            "A private battle can't be fetched by link, but you can hand the app the "
+            "log directly — no network needed:\n\n"
+            "1. In the battle room, open the ⚙️ menu and click **Download replay**, "
+            "then upload that file here; **or**\n"
+            "2. select the battle log text in the client and paste it below.\n\n"
+            "Nothing is lost this way: both players' names and Elo come from the log "
+            "itself, so the advisor still tunes to your opponent's rating."
+        )
+        up = st.file_uploader("Downloaded replay file",
+                              type=["html", "htm", "txt", "log"], key="priv_file")
+        pasted = st.text_area("…or paste the battle log", key="priv_log", height=140,
+                              placeholder="|player|p1|yugurex|102|1063\n|turn|1\n…")
+        raw = ""
+        if up is not None:
+            raw = up.getvalue().decode("utf-8", errors="replace")
+        elif pasted and pasted.strip():
+            raw = pasted
+        if not raw:
+            return ""
+        log = extract_log(raw)
+        if not is_battle_log(log):
+            st.error("That doesn't look like a Showdown battle log — it needs the "
+                     "`|player|` and `|turn|` lines. The **Download replay** file is "
+                     "the most reliable source.")
+            return ""
+        st.success(f"Loaded a battle log ({log.count(chr(10)) + 1} lines).")
+        return log
+
+
 def render_replay_analyzer() -> None:
     st.text_input("Replay URL or ID", key="replay_ref",
                   placeholder="https://replay.pokemonshowdown.com/gen9ou-...")
@@ -453,14 +497,25 @@ def render_replay_analyzer() -> None:
     with st.expander("🗂️ Battle history — find a replay by username"):
         render_history_browser()
 
+    log = _private_battle_input()
     ref = st.session_state.get("replay_ref", "").strip()
-    if not ref:
-        return
-    try:
-        game, probs = analyze(ref)
-    except requests.HTTPError:
-        st.error("Couldn't fetch that replay — check the URL/ID "
-                 "(private replays can't be fetched).")
+    if log:
+        try:
+            game, probs = analyze_log(log)
+        except (KeyError, ValueError, IndexError) as e:
+            st.error(f"Couldn't parse that battle log ({e}). Make sure it's the full "
+                     "log from the start of the battle.")
+            return
+    elif ref:
+        try:
+            game, probs = analyze(ref)
+        except requests.HTTPError:
+            st.error("Couldn't fetch that replay — check the URL/ID. A *private* replay "
+                     "link works only with its password suffix "
+                     "(`…/gen9ou-1234567890-abc123xyz`); otherwise use the "
+                     "**🔒 Private or unlisted battle** box above to paste the log.")
+            return
+    else:
         return
 
     if "OU" not in (game["format"] or ""):
