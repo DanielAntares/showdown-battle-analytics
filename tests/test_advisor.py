@@ -3,6 +3,7 @@
 import json
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 from src.advisor import (SimState, advise_search, hazard_chip, player_actions,
@@ -224,6 +225,28 @@ def test_advise_search_on_fixture():
     assert (out.worst_case <= out.average + 1e-9).all()
     assert list(out.worst_case) == sorted(out.worst_case, reverse=True)
     assert player_actions(game, "p2")  # options exist at turn 10
+
+
+def test_pessimism_for_elo_scales_with_rating():
+    from src.advisor import pessimism_for_elo
+    assert pessimism_for_elo(None) == 0.7                    # unknown -> balanced default
+    lo, mid, hi = (pessimism_for_elo(1000), pessimism_for_elo(1500),
+                   pessimism_for_elo(1900))
+    assert lo < mid < hi                                     # stronger foe -> more pessimism
+    assert 0.4 <= lo and hi <= 0.92
+    assert pessimism_for_elo(400) == pytest.approx(0.40)     # clamped low
+    assert pessimism_for_elo(3000) == pytest.approx(0.92)    # clamped high
+
+
+def test_rank_by_pessimism_trades_worst_case_for_expected_value():
+    from src.advisor import _rank_by_pessimism
+    df = pd.DataFrame([
+        {"action": "safe", "worst_case": 0.30, "average": 0.35, "worst_response": "x"},
+        {"action": "greedy", "worst_case": 0.25, "average": 0.60, "worst_response": "y"},
+    ])
+    # strong opponent (worst-case) -> the safe line; weak opponent -> the greedy line
+    assert _rank_by_pessimism(df, 1.0).iloc[0].action == "safe"
+    assert _rank_by_pessimism(df, 0.2).iloc[0].action == "greedy"
 
 
 def _pivot_game(active, bench, p2_active, active_moves):

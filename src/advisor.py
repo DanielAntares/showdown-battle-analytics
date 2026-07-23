@@ -623,8 +623,30 @@ def player_actions(game: dict, side: str) -> list[dict]:
     return acts
 
 
-def advise_search(game: dict, side: str, booster, meta, snapshot_features) -> pd.DataFrame:
-    """Rank `side`'s actions by worst-case win probability (1-ply minimax)."""
+def pessimism_for_elo(elo, default: float = 0.7) -> float:
+    """How much to weight the opponent's *best* (worst-for-us) response over their
+    average one, from their ladder rating. A strong player reliably finds the
+    punish, so plan for the worst case (weight → 1); a weaker one often won't, so
+    lean on the expected outcome and take the higher-value line (weight → 0.4).
+    Returns a weight in [0.4, 0.92]; `default` (balanced) when the Elo is unknown."""
+    if not elo:
+        return default
+    return float(np.clip(0.40 + (elo - 1000) * (0.92 - 0.40) / 900, 0.40, 0.92))
+
+
+def _rank_by_pessimism(df: pd.DataFrame, pessimism: float) -> pd.DataFrame:
+    """Order actions by a worst/average blend: pure worst-case at pessimism=1,
+    pure expected value at pessimism=0. Keeps the table's columns unchanged."""
+    rank = pessimism * df.worst_case + (1 - pessimism) * df.average
+    return df.assign(_rank=rank).sort_values("_rank", ascending=False,
+                                             ignore_index=True).drop(columns="_rank")
+
+
+def advise_search(game: dict, side: str, booster, meta, snapshot_features,
+                  pessimism: float = 1.0) -> pd.DataFrame:
+    """Rank `side`'s actions by a worst-case / expected blend (1-ply minimax).
+    `pessimism` (see pessimism_for_elo) sets how adversarial the opponent is
+    assumed to be; 1.0 is the pure worst-case recommendation."""
     snap = game["snapshots"][-1]
     opp = "p2" if side == "p1" else "p1"
     mine, theirs = player_actions(game, side), player_actions(game, opp)
@@ -656,8 +678,7 @@ def advise_search(game: dict, side: str, booster, meta, snapshot_features) -> pd
         rows.append({"action": a["label"], "worst_case": float(grid[i, worst_j]),
                      "average": float(grid[i].mean()),
                      "worst_response": theirs[worst_j]["label"]})
-    return pd.DataFrame(rows).sort_values("worst_case", ascending=False,
-                                          ignore_index=True)
+    return _rank_by_pessimism(pd.DataFrame(rows), pessimism)
 
 
 # moves that switch the user out after resolving — the follow-up mon matters as

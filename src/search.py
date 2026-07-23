@@ -200,20 +200,23 @@ def _build_tree(game: dict, side: str, depth: int, rollout: int, k: int, leaves:
     return ("max", my)
 
 
-def _reduce(node, scores: np.ndarray) -> float:
+def _reduce(node, scores: np.ndarray, pessimism: float) -> float:
     if node[0] == "leaf":
         return float(scores[node[1]])
     best = 0.0
     for responses in node[1]:  # my action -> list of opponent-response subtrees
-        vs = [_reduce(c, scores) for c in responses]
-        best = max(best, PESSIMISM * min(vs) + (1 - PESSIMISM) * (sum(vs) / len(vs)))
+        vs = [_reduce(c, scores, pessimism) for c in responses]
+        best = max(best, pessimism * min(vs) + (1 - pessimism) * (sum(vs) / len(vs)))
     return best
 
 
 def deep_search(game: dict, side: str, booster, meta, depth: int = 2,
-                rollout: int = 3, top_k: int = 3) -> pd.DataFrame:
+                rollout: int = 3, top_k: int = 3,
+                pessimism: float = PESSIMISM) -> pd.DataFrame:
     """Rank `side`'s actions by multi-turn value. Effective horizon ≈ depth +
-    rollout turns. Same table shape as the 1-ply advisor."""
+    rollout turns. Same table shape as the 1-ply advisor. `pessimism` weights the
+    opponent's best response vs their average one at every decision node (see
+    advisor.pessimism_for_elo) — lower it against weaker opponents."""
     opp = _other(side)
     opp_acts = top_actions(game, opp, top_k)
     leaves: list = []
@@ -226,8 +229,13 @@ def deep_search(game: dict, side: str, booster, meta, depth: int = 2,
     rows = []
     my_acts = top_actions(game, side, max(top_k, 5))
     for a, responses in zip(my_acts, root):
-        vals = [_reduce(c, scores) for c in responses]
+        vals = [_reduce(c, scores, pessimism) for c in responses]
         rows.append({"action": a["label"], "worst_case": float(min(vals)),
                      "average": float(sum(vals) / len(vals)),
                      "worst_response": opp_acts[int(np.argmin(vals))]["label"]})
-    return pd.DataFrame(rows).sort_values("worst_case", ascending=False, ignore_index=True)
+    df = pd.DataFrame(rows)
+    if not len(df):
+        return df
+    rank = pessimism * df.worst_case + (1 - pessimism) * df.average
+    return df.assign(_rank=rank).sort_values("_rank", ascending=False,
+                                             ignore_index=True).drop(columns="_rank")

@@ -118,13 +118,26 @@ def test_score_batch_is_side_symmetric():
 def test_deep_search_is_well_formed_and_sorted():
     booster, meta = load_model()
     game = _load(up_to_turn=8)
-    out = deep_search(game, "p1", booster, meta, depth=2, rollout=2, top_k=2)
+    out = deep_search(game, "p1", booster, meta, depth=2, rollout=2, top_k=2, pessimism=1.0)
     assert len(out) >= 1
     assert set(out.columns) >= {"action", "worst_case", "average", "worst_response"}
     assert out.worst_case.between(0, 1).all()
     assert out.average.between(0, 1).all()
     assert (out.worst_case <= out.average + 1e-9).all()  # worst never beats average
+    # pessimism=1.0 ranks purely by worst case
     assert list(out.worst_case) == sorted(out.worst_case, reverse=True)
+
+
+def test_deep_search_ranking_follows_pessimism():
+    """The Elo knob: at every pessimism the table is ordered by the same
+    worst/average blend the recommendation is chosen on."""
+    booster, meta = load_model()
+    game = _load(up_to_turn=8)
+    for pess in (0.4, 0.7, 1.0):
+        out = deep_search(game, "p1", booster, meta, depth=2, rollout=2, top_k=2,
+                          pessimism=pess)
+        rank = pess * out.worst_case + (1 - pess) * out.average
+        assert list(rank) == sorted(rank, reverse=True)
 
 
 def test_deep_search_is_deterministic():

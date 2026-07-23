@@ -12,8 +12,8 @@ import plotly.graph_objects as go
 import requests
 import streamlit as st
 
-from src.advisor import (active_pivot_move, advise_search, pivot_targets,
-                         recommend_lead)
+from src.advisor import (active_pivot_move, advise_search, pessimism_for_elo,
+                         pivot_targets, recommend_lead)
 from src.common import ROOT
 from src.movesets import moveset_with_probs, predict_spread, species_set
 from src.live import LiveBattle, find_user_battle, list_battles
@@ -71,6 +71,23 @@ def _advice_signature(game: dict) -> str:
     return "¶".join(parts)
 
 
+def _opponent_read(elo, pessimism: float, opp_name: str) -> str:
+    """One line explaining how the recommendation is tuned to the opponent's Elo."""
+    if not elo:
+        return ("🎯 Opponent Elo unknown — balancing their best response against the "
+                "expected one (50/50-ish).")
+    worst_pct, avg_pct = round(pessimism * 100), round((1 - pessimism) * 100)
+    if pessimism >= 0.82:
+        style = "planning for their **best** response — a strong player will find the punish"
+    elif pessimism <= 0.55:
+        style = ("leaning on the **expected** outcome — at this rating they often miss the "
+                 "ideal punish, so the higher-value line is worth the risk")
+    else:
+        style = "balancing their best response against the average one"
+    return (f"🎯 Tuned for **{opp_name}** (~{round(elo)} Elo): {style} "
+            f"({worst_pct}% worst-case / {avg_pct}% expected).")
+
+
 def render_advisor(game: dict, names: dict, key_prefix: str) -> None:
     """Best-action search: 1-ply minimax, or optional multi-turn deep search."""
     c1, c2 = st.columns(2)
@@ -84,11 +101,17 @@ def render_advisor(game: dict, names: dict, key_prefix: str) -> None:
                              "delayed KOs a Protect only postpones, compounding hazard "
                              "chip — but takes a couple of seconds.")
     side = "p1" if side_name == names["p1"] else "p2"
+    opp = "p2" if side == "p1" else "p1"
     booster, meta = cached_model()
+    # Adapt the opponent model to their ladder rating: plan for the worst case vs a
+    # strong player, but lean on expected value vs a weaker one who won't reliably
+    # find the punish (and so take the higher-value, slightly riskier line).
+    opp_elo = game.get(f"{opp}_rating")
+    pess = pessimism_for_elo(opp_elo)
     # The live panel re-runs every 3s to refresh the chart; the search is far too
     # expensive to redo each tick. Cache it on a signature of the battle state so
     # it only recomputes when something actually changed (a real turn, HP, faint).
-    sig = (side, mode, _advice_signature(game))
+    sig = (side, mode, round(pess, 3), _advice_signature(game))
     ckey = f"{key_prefix}_advcache"
     cached = st.session_state.get(ckey)
     if cached and cached["sig"] == sig:
@@ -96,14 +119,16 @@ def render_advisor(game: dict, names: dict, key_prefix: str) -> None:
     else:
         if mode.startswith("Deep"):
             with st.spinner("searching several turns ahead…"):
-                out = deep_search(game, side, booster, meta, depth=2, rollout=3, top_k=3)
+                out = deep_search(game, side, booster, meta, depth=2, rollout=3,
+                                  top_k=3, pessimism=pess)
             engine_note = ("multi-turn maximin search (horizon ≈ 5 turns): a depth-2 "
                            "adversarial tree over each side's most promising moves, extended "
                            "by a greedy rollout, with every turn played out on the damage "
                            "engine and the resulting positions scored by the win-prob model.")
         else:
             with st.spinner("simulating action matrix…"):
-                out = advise_search(game, side, booster, meta, snapshot_features)
+                out = advise_search(game, side, booster, meta, snapshot_features,
+                                    pessimism=pess)
             engine_note = ("1-ply minimax over every (action × opponent response) pair, each "
                            "simulated with a level-100 damage engine (STAB, type chart, boosts, "
                            "burn/paralysis, screens, weather, hazard chip) and scored by the "
@@ -116,6 +141,7 @@ def render_advisor(game: dict, names: dict, key_prefix: str) -> None:
     if not len(out):
         st.caption("no legal actions to evaluate (active Pokémon fainted or unknown)")
         return
+    st.caption(_opponent_read(opp_elo, pess, names[opp]))
     best = out.iloc[0]
     st.success(f"**Best action: {best.action}** — {best.worst_case:.0%} win probability "
                f"even against the opponent's best response ({best.worst_response})")
