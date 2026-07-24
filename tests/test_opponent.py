@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from src.opponent import decisions_from_log
+from src.parser import parse_replay
 
 FIXTURES = sorted((Path(__file__).parent / "fixtures").glob("*.json"))
 
@@ -87,3 +88,25 @@ def test_switch_rows_carry_matchup_not_move_features():
         if r["is_switch"]:
             assert r["m_power"] == 0 and r["m_usage_prob"] == 0.0
             assert r["s_hp"] > 0  # a real benched mon
+
+
+# ---- inference (needs the trained ranker in models/) -------------------------
+
+def test_predict_actions_returns_ranked_distribution():
+    from src.opponent import predict_actions
+    game = parse_replay(json.loads(FIXTURES[0].read_text(encoding="utf-8")), up_to_turn=8)
+    preds = predict_actions(game, "p2", top=5)
+    assert preds and len(preds) <= 5
+    assert all({"kind", "name", "prob"} <= set(p) for p in preds)
+    assert all(p["kind"] in ("move", "switch") for p in preds)
+    probs = [p["prob"] for p in preds]
+    assert probs == sorted(probs, reverse=True)     # ranked most-likely first
+    assert all(0.0 <= p <= 1.0 for p in probs)
+
+
+def test_predict_actions_safe_when_active_fainted():
+    from src.opponent import predict_actions
+    game = parse_replay(json.loads(FIXTURES[0].read_text(encoding="utf-8")), up_to_turn=8)
+    for m in game["roster"]["p2"]:
+        m["fainted"], m["active"] = m["active"], False  # no live active
+    assert predict_actions(game, "p2") == []

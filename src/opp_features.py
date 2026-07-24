@@ -25,6 +25,8 @@ FEATURES = [
     "turn", "my_hp", "my_statused", "opp_hp", "opp_statused",
     "my_fainted", "opp_fainted", "material_diff", "my_off_boost", "my_spe_boost",
     "rocks_on_me", "i_am_faster", "n_bench",
+    # shared: how much danger the active is in — the main reason to switch
+    "threat_in", "threat_ko", "i_threaten", "i_ko", "best_switch_resist",
     # candidate: which kind
     "is_switch",
     # candidate: move
@@ -51,6 +53,23 @@ def _dmg_proxy(power, type_eff, stab, my_sp, opp_sp, physical) -> float:
     return power * type_eff * (1.5 if stab else 1.0) * (off / dfn) / 320.0
 
 
+def _best_hit(atk_sp: str, dfn_sp: str, revealed: tuple) -> float:
+    """Largest damage proxy the attacker's likely moves land on the defender —
+    how threatened the defender is. Uses the usage-predicted moveset."""
+    atk_types = (lookup(atk_sp) or {}).get("types", [])
+    dfn_types = (lookup(dfn_sp) or {}).get("types", [])
+    best = 0.0
+    for name in predict_moves(atk_sp, revealed, 4):
+        info = move_info(name)
+        power = info.get("power", 0) or 0 if info else 0
+        if not power:
+            continue
+        eff = effectiveness(info["type"], dfn_types) if dfn_types else 1.0
+        best = max(best, _dmg_proxy(power, eff, info["type"] in atk_types,
+                                    atk_sp, dfn_sp, info.get("category") == "Physical"))
+    return best
+
+
 def _base(dec: dict) -> dict:
     """Board-state features shared by every candidate row of a decision."""
     side, snap, roster = dec["side"], dec["snapshot"], dec["roster"]
@@ -60,11 +79,21 @@ def _base(dec: dict) -> dict:
     opp_spe = real_stats(opp_sp)["spe"] * _boost_mult(snap.get(f"{opp}_boost_spe", 0))
     bench = [m for m in roster[side]
              if not m["active"] and not m["fainted"] and m["hp"] > 0]
+    opp_types = (lookup(opp_sp) or {}).get("types", [])
+    my_active = next((m for m in roster[side] if m["active"]), None)
+    opp_active = next((m for m in roster[opp] if m["active"]), None)
+    my_hp = snap.get(f"{side}_active_hp", 1.0)
+    opp_hp = snap.get(f"{opp}_active_hp", 1.0)
+    # danger signals — the state features that let the model anticipate a switch
+    threat_in = _best_hit(opp_sp, my_sp, tuple(opp_active["moves"]) if opp_active else ())
+    i_threaten = _best_hit(my_sp, opp_sp, tuple(my_active["moves"]) if my_active else ())
+    best_resist = min((max((effectiveness(t, (lookup(m["species"]) or {}).get("types", []))
+                            for t in opp_types), default=2.0) for m in bench), default=2.0)
     return {
         "turn": snap.get("turn", 0),
-        "my_hp": snap.get(f"{side}_active_hp", 1.0),
+        "my_hp": my_hp,
         "my_statused": int(bool(snap.get(f"{side}_active_status"))),
-        "opp_hp": snap.get(f"{opp}_active_hp", 1.0),
+        "opp_hp": opp_hp,
         "opp_statused": int(bool(snap.get(f"{opp}_active_status"))),
         "my_fainted": snap.get(f"{side}_fainted", 0),
         "opp_fainted": snap.get(f"{opp}_fainted", 0),
@@ -74,6 +103,11 @@ def _base(dec: dict) -> dict:
         "rocks_on_me": snap.get(f"{side}_hazard_stealthrock", 0),
         "i_am_faster": int(my_spe > opp_spe),
         "n_bench": len(bench),
+        "threat_in": threat_in,
+        "threat_ko": int(threat_in >= my_hp),
+        "i_threaten": i_threaten,
+        "i_ko": int(i_threaten >= opp_hp),
+        "best_switch_resist": best_resist,
     }, side, opp, my_sp, opp_sp, bench
 
 

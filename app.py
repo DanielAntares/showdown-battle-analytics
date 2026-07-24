@@ -17,6 +17,7 @@ from src.advisor import (active_pivot_move, advise_search, pessimism_for_elo,
 from src.common import ROOT
 from src.movesets import moveset_with_probs, predict_spread, species_set
 from src.live import LiveBattle, find_user_battle, list_battles
+from src.opponent import predict_actions
 from src.parser import extract_log, is_battle_log, parse_replay
 from src.search import deep_search
 from src.predict import (actions_by_turn, fetch_replay, key_moments, load_model,
@@ -81,6 +82,27 @@ def _advice_signature(game: dict) -> str:
     return "¶".join(parts)
 
 
+def _render_opp_prediction(preds: list, opp_name: str) -> None:
+    """Show what the opponent is most likely to do next, from the trained
+    behaviour model (a separate model from the win-prob / advisor engine)."""
+    if not preds:
+        return
+    def label(p):
+        return (f"switch to {p['name']}" if p["kind"] == "switch" else p["name"])
+    top = preds[0]
+    rest = " · ".join(f"{label(p)} {p['prob']:.0%}" for p in preds[1:4])
+    with st.expander(f"🔮 What {opp_name} is likely to do — {label(top)} ({top['prob']:.0%})"):
+        st.markdown("  \n".join(
+            f"{'🔀' if p['kind']=='switch' else '⚔️'} **{label(p)}** — {p['prob']:.0%}"
+            for p in preds))
+        st.caption("Learned from ~1.3M real ladder decisions (a behaviour model, "
+                   "separate from the win-prob engine): on held-out games the real move "
+                   "is the top pick ≈46% of the time and in the top 3 ≈75%. Exact "
+                   "switches are harder — it reads switch pressure from the matchup but "
+                   "pinpoints the target less reliably. Percentages are relative "
+                   "likelihoods; the opponent's moveset/EVs are still usage-predicted.")
+
+
 def _opponent_read(elo, pessimism: float, opp_name: str) -> str:
     """One line explaining how the recommendation is tuned to the opponent's Elo."""
     if not elo:
@@ -125,7 +147,8 @@ def render_advisor(game: dict, names: dict, key_prefix: str) -> None:
     ckey = f"{key_prefix}_advcache"
     cached = st.session_state.get(ckey)
     if cached and cached["sig"] == sig:
-        out, engine_note, pivot_df = cached["out"], cached["note"], cached["pivot"]
+        out, engine_note = cached["out"], cached["note"]
+        pivot_df, opp_pred = cached["pivot"], cached["opp_pred"]
     else:
         if mode.startswith("Deep"):
             with st.spinner("searching several turns ahead…"):
@@ -146,12 +169,17 @@ def render_advisor(game: dict, names: dict, key_prefix: str) -> None:
         pm = active_pivot_move(game, side)
         pivot_df = (pivot_targets(game, side, booster, meta, snapshot_features, pm)
                     if pm else None)
+        try:
+            opp_pred = predict_actions(game, opp, top=5)
+        except Exception:
+            opp_pred = []  # ranker unavailable — the rest of the panel still works
         st.session_state[ckey] = {"sig": sig, "out": out, "note": engine_note,
-                                  "pivot": pivot_df}
+                                  "pivot": pivot_df, "opp_pred": opp_pred}
     if not len(out):
         st.caption("no legal actions to evaluate (active Pokémon fainted or unknown)")
         return
     st.caption(_opponent_read(opp_elo, pess, names[opp]))
+    _render_opp_prediction(opp_pred, names[opp])
     best = out.iloc[0]
     st.success(f"**Best action: {best.action}** — {best.worst_case:.0%} win probability "
                f"even against the opponent's best response ({best.worst_response})")

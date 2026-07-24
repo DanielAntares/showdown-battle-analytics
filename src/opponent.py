@@ -21,9 +21,50 @@ its own before it is ever trusted to steer a recommendation.
 from src.parser import (BattleParser, _side_of, _species_of, is_battle_log,
                         roster_of)
 
+RANKER = None  # lazily loaded booster
+
 
 def _split(line: str) -> list[str]:
     return line.split("|")
+
+
+def load_ranker():
+    """The trained opponent-action ranker (cached)."""
+    global RANKER
+    if RANKER is None:
+        import lightgbm as lgb
+        from src.common import ROOT
+        RANKER = lgb.Booster(model_file=str(ROOT / "models" / "opp_ranker.txt"))
+    return RANKER
+
+
+def predict_actions(game: dict, side: str, booster=None, top: int = 5,
+                    temperature: float = 0.5) -> list[dict]:
+    """Rank what `side` is most likely to do next turn — moves and switches
+    together — as [{kind, name, prob}], most likely first. `prob` is a softmax
+    over the ranker's scores (a relative likelihood, not a calibrated one)."""
+    import numpy as np
+    import pandas as pd
+
+    from src.opp_features import FEATURES, featurize_decision
+    booster = booster or load_ranker()
+    snap = game["snapshots"][-1] if game.get("snapshots") else None
+    if not snap or not game.get("roster"):
+        return []
+    active = next((m for m in game["roster"][side] if m["active"]), None)
+    if active is None or active["fainted"]:
+        return []
+    dec = {"side": side, "snapshot": snap, "roster": game["roster"],
+           "chosen_kind": "", "chosen_name": ""}
+    rows = [r for r in featurize_decision(dec) if r["predicted"]]
+    if not rows:
+        return []
+    scores = booster.predict(pd.DataFrame([{f: r[f] for f in FEATURES} for r in rows]))
+    e = np.exp((scores - scores.max()) / max(temperature, 1e-6))
+    probs = e / e.sum()
+    ranked = sorted(({"kind": r["_kind"], "name": r["_name"], "prob": float(p)}
+                     for r, p in zip(rows, probs)), key=lambda d: -d["prob"])
+    return ranked[:top]
 
 
 def decisions_from_log(log: str, keep_forced: bool = False) -> list[dict]:
