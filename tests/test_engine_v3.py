@@ -225,7 +225,8 @@ def test_attacks_dropped_vs_underground_opponent():
     _, snap = _sim_1v1("Deoxys-Speed", "Grafaiai")
     game = {"roster": {
         "p1": [_mon("Deoxys-Speed", moves=["Psycho Boost", "Stealth Rock", "Spikes"])],
-        "p2": [_mon("Grafaiai", active=True, volatiles=["semiinvuln"])]},
+        "p2": [_mon("Grafaiai", active=True, volatiles=["semiinvuln"]),
+               _mon("Kingambit")]},  # a bench mon exists, so hazards can still pay off
         "snapshots": [snap]}
     names = [m["name"] for m in moves_for(game["roster"]["p1"][0], snap, "p1", game)]
     assert "Psycho Boost" not in names        # would miss the underground target

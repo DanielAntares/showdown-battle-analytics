@@ -44,6 +44,14 @@ SCREEN_DURATION, FIELD_DURATION = 5, 5
 # so the advisor curbs reflexive switching AND isn't fooled into thinking a KO is
 # worthless just because the opponent could pivot the target out.
 SWITCH_COST = 0.06
+# reward for a net material lead (their faints minus mine) in the resulting
+# position: the win-prob model under-values KOs — after a kill the opponent's
+# next (fresh, scarier) Pokemon comes in, and the model reads that board as only
+# marginally better, so a lethal move can tie or lose to a setup/hazard move on
+# noise. This nudge makes securing a KO count. deep_search shares this constant.
+MATERIAL_BONUS = 0.03
+# phazing moves that ONLY force a switch (no damage) — useless with no switch-in
+PHAZE_STATUS = {"whirlwind", "roar"}
 
 
 def predicted_item(mon: dict) -> str:
@@ -560,6 +568,11 @@ def moves_for(mon: dict, snap: dict | None = None, side: str | None = None,
         opp_item = predicted_item(opp_entry)
         opp_status = snap.get(f"{opp}_active_status", "")
         status = mon.get("status", "")
+        # does the opponent still have anything to switch in? (team preview means
+        # the roster lists all six, so counting un-fainted is exact)
+        opp_alive = [x for x in (game or {}).get("roster", {}).get(opp, [])
+                     if not x["fainted"]]
+        no_switchin = len(opp_alive) == 1  # only their active remains
 
         def no_effect(m):  # a status move that will simply fail
             if m["category"] != "Status" or not m.get("inflicts"):
@@ -580,6 +593,10 @@ def moves_for(mon: dict, snap: dict | None = None, side: str | None = None,
             if no_effect(m):
                 return True  # e.g. Thunder Wave into an already-paralyzed target
             sc = m.get("side_condition")
+            # hazards and phazing only pay off through a switch-in — dead moves
+            # when the opponent has none left (their last Pokémon is on the field)
+            if no_switchin and (sc in HAZARD_MAX or n in PHAZE_STATUS):
+                return True
             return (sc in HAZARD_MAX and snap[f"{opp}_hazard_{sc}"] >= HAZARD_MAX[sc]) \
                 or (sc in SCREENS and snap[f"{side}_screen_{sc}"])
 
@@ -669,6 +686,10 @@ def advise_search(game: dict, side: str, booster, meta, snapshot_features,
     p1_win = calibrate(booster.predict(snapshot_features({**game, "snapshots": snapshots},
                                                          meta)), meta)
     mine_win = np.asarray(p1_win if side == "p1" else 1 - p1_win)
+    # material correction: reward positions where the opponent has lost more mons
+    # than me, so a move that secures a KO isn't out-ranked by a passive one.
+    mat = np.array([s[f"{opp}_fainted"] - s[f"{side}_fainted"] for s in snapshots])
+    mine_win = np.clip(mine_win + MATERIAL_BONUS * mat, 0.0, 1.0)
     # symmetric tempo adjustment: my switch costs me, the opponent's switch credits me
     my_switch = np.array([SWITCH_COST if a["kind"] == "switch" else 0.0 for a in mine])
     opp_switch = np.array([SWITCH_COST if b["kind"] == "switch" else 0.0 for b in theirs])

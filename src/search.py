@@ -22,8 +22,8 @@ turn, so the output can feed straight back in for the next turn.
 import numpy as np
 import pandas as pd
 
-from src.advisor import (SWITCH_COST, SimState, effectiveness, is_pure_setup,
-                         lookup, moves_for, player_actions)
+from src.advisor import (MATERIAL_BONUS, SWITCH_COST, SimState, effectiveness,
+                         is_pure_setup, lookup, moves_for, player_actions)
 from src.predict import calibrate, snapshot_features
 
 
@@ -149,7 +149,6 @@ def _other(side: str) -> str:
 
 # ---- the search itself -------------------------------------------------------
 
-MATERIAL_BONUS = 0.03      # match the 1-ply advisor's material correction
 PESSIMISM = 0.7           # weight on the opponent's best (worst-for-us) response
 
 

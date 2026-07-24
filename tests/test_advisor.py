@@ -147,6 +147,47 @@ def test_move_legality_filters():
     assert "Earthquake" not in names and "Extreme Speed" in names
 
 
+def test_hazards_and_phazing_dead_without_opponent_switchins():
+    """Hazards and status phazing only pay off through a switch-in — the advisor
+    must stop offering them once the opponent is down to their last Pokémon."""
+    from src.advisor import moves_for
+    game, snap = _sim_1v1("Great Tusk", "Kingambit")  # p2 has a single mon: no switch-in
+    me = game["roster"]["p1"][0]
+    me["moves"] = ["Headlong Rush", "Stealth Rock", "Roar", "Ice Spinner"]
+    names = [m["name"] for m in moves_for(me, snap, "p1", game)]
+    assert "Stealth Rock" not in names   # nothing to switch into it
+    assert "Roar" not in names           # phazing a lone opponent does nothing
+    assert "Headlong Rush" in names      # attacks are unaffected
+    game["roster"]["p2"].append(_mon("Gholdengo", active=False))  # now a switch-in exists
+    back = [m["name"] for m in moves_for(me, snap, "p1", game)]
+    assert "Stealth Rock" in back and "Roar" in back
+
+
+def test_advise_search_rewards_securing_a_ko():
+    """The material bonus must lift a lethal move above a passive one, so the
+    advisor doesn't recommend Stealth Rock over a guaranteed KO."""
+    import src.advisor as A
+    from src.predict import load_model, snapshot_features
+    from src.advisor import advise_search
+    booster, meta = load_model()
+    game, snap = _sim_1v1("Great Tusk", "Landorus-Therian")  # 4x weak to Ice Spinner
+    snap["p2_active_hp"] = 0.25                                   # opponent in KO range
+    snap["p1_healthy"], snap["p2_healthy"] = 1, 1
+    game["roster"]["p2"].append(_mon("Kingambit", active=False))  # bench -> SR not auto-pruned
+    game["roster"]["p1"][0]["moves"] = ["Ice Spinner", "Stealth Rock",
+                                        "Headlong Rush", "Rapid Spin"]
+    full = advise_search(game, "p1", booster, meta, snapshot_features).set_index("action")
+    orig = A.MATERIAL_BONUS
+    try:
+        A.MATERIAL_BONUS = 0.0
+        none = advise_search(game, "p1", booster, meta, snapshot_features).set_index("action")
+    finally:
+        A.MATERIAL_BONUS = orig
+    # the KO move is credited for the faint (worst_case can hide it — the opponent
+    # switches to deny the KO — so check the average, which includes the KO lines)
+    assert full.loc["Ice Spinner", "average"] > none.loc["Ice Spinner", "average"] + 1e-6
+
+
 def test_useless_moves_pruned():
     from src.advisor import moves_for
     game, snap = _sim_1v1("Dondozo", "Kingambit")
