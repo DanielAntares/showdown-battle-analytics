@@ -342,6 +342,26 @@ class BattleParser:
         return row
 
 
+def roster_of(parser: BattleParser) -> dict:
+    """The per-side team state (each mon's hp/status/moves/active flag/...) at the
+    parser's current position. Reused to snapshot the roster mid-battle, not only
+    at the end (the action-prediction dataset needs it at every turn)."""
+    return {
+        sid: [{"species": m.species, "hp": m.hp, "status": m.status,
+               "fainted": m.fainted, "revealed": m.revealed,
+               "active": key == side.active, "moves": sorted(m.moves),
+               "item": m.item, "item_consumed": m.item_consumed,
+               "ability": m.ability, "tera": m.tera,
+               "uses": dict(m.uses), "sleep_turns": m.sleep_turns,
+               "volatiles": sorted(side.volatiles) if key == side.active else [],
+               "last_move": side.last_move if key == side.active else "",
+               "tox_turns": side.tox_turns if key == side.active else 0,
+               "future_pending": side.future_pending if key == side.active else False}
+              for key, m in side.team.items()]
+        for sid, side in parser.sides.items()
+    }
+
+
 def game_state(parser: BattleParser, id: str | None = None,
                format: str | None = None, rating: int | None = None) -> dict:
     """The game dict downstream code consumes — from any parser (replay or live)."""
@@ -357,20 +377,7 @@ def game_state(parser: BattleParser, id: str | None = None,
         "winner": parser.winner,
         "n_turns": parser.turn,
         "teams": {sid: sorted(s.team) for sid, s in parser.sides.items()},
-        "roster": {
-            sid: [{"species": m.species, "hp": m.hp, "status": m.status,
-                   "fainted": m.fainted, "revealed": m.revealed,
-                   "active": key == side.active, "moves": sorted(m.moves),
-                   "item": m.item, "item_consumed": m.item_consumed,
-                   "ability": m.ability, "tera": m.tera,
-                   "uses": dict(m.uses), "sleep_turns": m.sleep_turns,
-                   "volatiles": sorted(side.volatiles) if key == side.active else [],
-                   "last_move": side.last_move if key == side.active else "",
-                   "tox_turns": side.tox_turns if key == side.active else 0,
-                   "future_pending": side.future_pending if key == side.active else False}
-                  for key, m in side.team.items()]
-            for sid, side in parser.sides.items()
-        },
+        "roster": roster_of(parser),
         "field": {
             "weather_set_turn": parser.weather_set_turn,
             "terrain_set_turn": parser.terrain_set_turn,
