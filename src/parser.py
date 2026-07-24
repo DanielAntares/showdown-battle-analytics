@@ -50,6 +50,7 @@ class Side:
     hazards: dict = field(default_factory=lambda: {h: 0 for h in HAZARD_MAX})
     screens: set = field(default_factory=set)
     volatiles: set = field(default_factory=set)  # encore/taunt/... on the active
+    disabled: str = ""  # a move Disabled / Cursed-Body'd on the active ("" = none)
     last_move: str = ""  # last move the active used since switching in
     screen_turns: dict = field(default_factory=dict)  # screen -> turn it was set
     tox_turns: int = 0  # toxic counter of the active (resets on switch)
@@ -146,6 +147,7 @@ class BattleParser:
         side.active = key
         side.boosts = {s: 0 for s in BOOST_STATS}  # switching clears boosts
         side.volatiles = set()  # ... and volatile states / move locks
+        side.disabled = ""
         side.last_move = ""
         side.tox_turns = 0  # the toxic counter resets on switching out
 
@@ -233,10 +235,16 @@ class BattleParser:
             if mon := self._mon(p[2]):
                 self._event(_side_of(p[2]), f"{mon.species}'s attack missed", luck=True)
         elif cmd == "-start":
-            self.sides[_side_of(p[2])].volatiles.add(_norm_condition(p[3]))
+            side = self.sides[_side_of(p[2])]
+            cond = _norm_condition(p[3])
+            side.volatiles.add(cond)
+            if cond == "disable" and len(p) > 4:  # Disable/Cursed Body name one move
+                side.disabled = p[4]
         elif cmd == "-end":
             cond = _norm_condition(p[3])
             self.sides[_side_of(p[2])].volatiles.discard(cond)
+            if cond == "disable":
+                self.sides[_side_of(p[2])].disabled = ""
             if cond in ("futuresight", "doomdesire"):  # resolved on the target's slot
                 self.sides["p1" if _side_of(p[2]) == "p2" else "p2"].future_pending = False
         elif cmd == "-item":
@@ -354,6 +362,7 @@ def roster_of(parser: BattleParser) -> dict:
                "ability": m.ability, "tera": m.tera,
                "uses": dict(m.uses), "sleep_turns": m.sleep_turns,
                "volatiles": sorted(side.volatiles) if key == side.active else [],
+               "disabled": side.disabled if key == side.active else "",
                "last_move": side.last_move if key == side.active else "",
                "tox_turns": side.tox_turns if key == side.active else 0,
                "future_pending": side.future_pending if key == side.active else False}

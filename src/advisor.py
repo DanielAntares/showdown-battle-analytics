@@ -539,6 +539,9 @@ def moves_for(mon: dict, snap: dict | None = None, side: str | None = None,
         moves = locked or moves
     if "taunt" in volatiles:
         moves = [m for m in moves if m["category"] != "Status"] or moves
+    disabled = norm_name(mon.get("disabled", ""))  # Disable / Cursed Body locks out one move
+    if disabled:
+        moves = [m for m in moves if norm_name(m["name"]) != disabled] or moves
     # Choice items lock into the last move used — via predicted_item, so we stay
     # consistent with the damage engine (which already assumes the Choice boost)
     if predicted_item(mon).startswith("choice") and last:

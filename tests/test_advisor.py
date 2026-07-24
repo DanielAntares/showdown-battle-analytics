@@ -140,6 +140,11 @@ def test_move_legality_filters():
     taunted = moves_for(_mon("Gholdengo", volatiles=["taunt"],
                              moves=["Nasty Plot", "Recover", "Shadow Ball"]))
     assert all(m["category"] != "Status" for m in taunted)
+    # Disable / Cursed Body: the named move is removed, the rest stay
+    disabled = moves_for(_mon("Dragonite", disabled="Earthquake",
+                              moves=["Extreme Speed", "Dragon Dance", "Earthquake", "Roost"]))
+    names = [m["name"] for m in disabled]
+    assert "Earthquake" not in names and "Extreme Speed" in names
 
 
 def test_useless_moves_pruned():

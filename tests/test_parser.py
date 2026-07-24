@@ -135,3 +135,22 @@ def test_extract_log_rejects_non_logs():
     # HTML chrome around the log is dropped, indentation tolerated
     assert extract_log("  |turn|1\n<div>noise</div>\n  |player|p1|a|1|1500") == \
         "|turn|1\n|player|p1|a|1|1500"
+
+
+def test_disable_tracks_and_clears_the_named_move():
+    from src.parser import BattleParser, roster_of
+    log = ("|player|p1|a|1|1000\n|player|p2|b|1|1000\n|poke|p1|Dragonite|\n"
+           "|poke|p1|Kyurem|\n|poke|p2|Blastoise|\n|start\n"
+           "|switch|p1a: Dragonite|Dragonite, M|100/100\n"
+           "|switch|p2a: Blastoise|Blastoise, M|100/100\n|turn|1\n"
+           "|move|p1a: Dragonite|Earthquake|p2a: Blastoise\n"
+           "|-start|p1a: Dragonite|Disable|Earthquake|[from] ability: Cursed Body\n|turn|2")
+    p = BattleParser()
+    for line in log.splitlines():
+        p.feed(line)
+    active = next(m for m in roster_of(p)["p1"] if m["active"])
+    assert active["disabled"] == "Earthquake"
+    # switching the mon out clears the disable
+    for line in ["|switch|p1a: Kyurem|Kyurem|100/100", "|turn|3"]:
+        p.feed(line)
+    assert all(m["disabled"] == "" for m in roster_of(p)["p1"])
