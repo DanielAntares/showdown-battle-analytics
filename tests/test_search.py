@@ -128,6 +128,29 @@ def test_deep_search_is_well_formed_and_sorted():
     assert list(out.worst_case) == sorted(out.worst_case, reverse=True)
 
 
+def test_switch_incurs_a_tempo_cost():
+    """A switch must out-score staying by more than the tempo cost — otherwise a
+    winning position (everything ~99%) lets switches win on noise and the advice
+    ping-pongs between walls. Removing the cost should only *raise* switch values."""
+    import src.search as S
+    booster, meta = load_model()
+    game = _load(up_to_turn=8)
+    kw = dict(depth=1, rollout=1, top_k=3, pessimism=1.0)
+    costed = deep_search(game, "p1", booster, meta, **kw)
+    orig = S.SWITCH_COST
+    try:
+        S.SWITCH_COST = 0.0
+        free = deep_search(game, "p1", booster, meta, **kw)
+    finally:
+        S.SWITCH_COST = orig
+    a = costed[costed.action.str.startswith("switch to ")].set_index("action").worst_case
+    b = free[free.action.str.startswith("switch to ")].set_index("action").worst_case
+    common = a.index.intersection(b.index)
+    assert len(common)
+    assert (a[common] <= b[common] + 1e-9).all()      # cost never raises a switch
+    assert (a[common] < b[common] - 1e-4).any()        # and lowers at least one
+
+
 def test_deep_search_ranking_follows_pessimism():
     """The Elo knob: at every pessimism the table is ordered by the same
     worst/average blend the recommendation is chosen on."""

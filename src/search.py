@@ -22,8 +22,8 @@ turn, so the output can feed straight back in for the next turn.
 import numpy as np
 import pandas as pd
 
-from src.advisor import (SimState, effectiveness, is_pure_setup, lookup,
-                         moves_for, player_actions)
+from src.advisor import (SWITCH_COST, SimState, effectiveness, is_pure_setup,
+                         lookup, moves_for, player_actions)
 from src.predict import calibrate, snapshot_features
 
 
@@ -230,6 +230,12 @@ def deep_search(game: dict, side: str, booster, meta, depth: int = 2,
     my_acts = top_actions(game, side, max(top_k, 5))
     for a, responses in zip(my_acts, root):
         vals = [_reduce(c, scores, pessimism) for c in responses]
+        # tempo cost, as in the 1-ply advisor: a switch forfeits the turn, so it
+        # must clearly out-score staying to be worth it. Without this, a winning
+        # position (where the model rates almost everything ~99%) lets switches
+        # win on noise and the advice ping-pongs between walls turn after turn.
+        if a["kind"] == "switch":
+            vals = [max(0.0, v - SWITCH_COST) for v in vals]
         rows.append({"action": a["label"], "worst_case": float(min(vals)),
                      "average": float(sum(vals) / len(vals)),
                      "worst_response": opp_acts[int(np.argmin(vals))]["label"]})
