@@ -52,13 +52,13 @@ def step(game: dict, actions: dict) -> dict:
             e["sleep_turns"] = a.sleep_turns + 1 if a.status == "slp" else 0
             e["tox_turns"] = a.tox_turns + 1 if a.status == "tox" else 0
             e["last_move"] = sim.acted[side][1] if kind == "move" else ""
-            if kind != "move":  # a fresh switch-in has no volatiles / lock
-                e["volatiles"] = []
+            if kind != "move":  # a fresh switch-in has no volatiles / lock / disable
+                e["volatiles"], e["disabled"] = [], ""
         for m in roster[side]:  # set the active flag; clear volatiles off the field
             was = m["active"]
             m["active"] = m["species"] == new_sp
             if (was and not m["active"]) or (m["active"] and m["species"] != a.species):
-                m["volatiles"], m["last_move"] = [], ""
+                m["volatiles"], m["last_move"], m["disabled"] = [], "", ""
 
     # recompute aggregate snapshot fields from the roster so it's self-consistent
     for side in ("p1", "p2"):
