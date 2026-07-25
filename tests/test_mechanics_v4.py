@@ -183,6 +183,89 @@ def test_confusion_and_focus_energy_and_evasion():
     assert sim.active["p1"].hp < 1.0
 
 
+def test_good_as_gold_blocks_status_and_is_pruned():
+    from src.advisor import moves_for
+    game, snap = _mk("Slowking-Galar", "Gholdengo")  # GaG is Gholdengo's only ability
+    sim = SimState(game, snap)
+    sim.use_move("p1", _mv("Thunder Wave"))
+    assert sim.active["p2"].status == ""
+    me = game["roster"]["p1"][0]
+    me["moves"] = ["Thunder Wave", "Sludge Bomb", "Future Sight", "Chilly Reception"]
+    assert "Thunder Wave" not in [m["name"] for m in moves_for(me, snap, "p1", game)]
+
+
+def test_poison_heal_heals_and_toxic_is_pruned():
+    from src.advisor import moves_for
+    game, snap = _mk("Gliscor", "Kingambit", p1kw={"status": "tox", "item": "toxicorb"})
+    sim = SimState(game, snap)
+    sim.upkeep()
+    assert sim.active["p1"].hp >= 1.0 - 1e-9   # healed, not chipped
+    game, snap = _mk("Clodsire", "Gliscor")
+    me = game["roster"]["p1"][0]
+    me["moves"] = ["Toxic", "Earthquake", "Recover", "Stealth Rock"]
+    assert "Toxic" not in [m["name"] for m in moves_for(me, snap, "p1", game)]
+
+
+def test_magic_bounce_reflects_and_is_pruned():
+    from src.advisor import moves_for
+    game, snap = _mk("Ting-Lu", "Hatterene")
+    sim = SimState(game, snap)
+    sim.use_move("p1", _mv("Stealth Rock"))
+    assert sim.snap["p1_hazard_stealthrock"] == 1     # bounced onto the user
+    assert sim.snap["p2_hazard_stealthrock"] == 0
+    sim2 = SimState(game, snap)
+    sim2.use_move("p1", _mv("Toxic"))
+    assert sim2.active["p1"].status == "tox" and sim2.active["p2"].status == ""
+    me = game["roster"]["p1"][0]
+    me["moves"] = ["Stealth Rock", "Toxic", "Earthquake", "Whirlwind"]
+    names = [m["name"] for m in moves_for(me, snap, "p1", game)]
+    assert "Stealth Rock" not in names and "Toxic" not in names
+
+
+def test_weak_armor_triggers_on_physical_only():
+    game, snap = _mk("Kingambit", "Ceruledge", p2kw={"ability": "Weak Armor"})
+    sim = SimState(game, snap)
+    sim.use_move("p1", _mv("Kowtow Cleave"))
+    assert sim.active["p2"].boosts["def"] == -1
+    assert sim.active["p2"].boosts["spe"] == 2
+    sim2 = SimState(game, snap)
+    sim2.use_move("p1", _mv("Shadow Ball"))
+    assert sim2.active["p2"].boosts["spe"] == 0
+
+
+def test_dauntless_shield_defiant_and_surges_on_switch():
+    # Dauntless Shield: +1 Def the moment Zamazenta lands
+    game, snap = _mk("Corviknight", "Kingambit")
+    game["roster"]["p1"].append(_mon("Zamazenta", active=False))
+    sim = SimState(game, snap)
+    sim.switch("p1", game["roster"]["p1"][1])
+    assert sim.active["p1"].boosts["def"] == 1
+    # Intimidate into Defiant: -1 then +2 = net +1 Atk
+    game, snap = _mk("Corviknight", "Kingambit", p2kw={"ability": "Defiant"})
+    game["roster"]["p1"].append(_mon("Landorus-Therian", active=False))
+    sim = SimState(game, snap)
+    sim.switch("p1", game["roster"]["p1"][1])
+    assert sim.active["p2"].boosts["atk"] == 1
+    # Drizzle sets rain; Grassy Surge sets terrain
+    game, snap = _mk("Corviknight", "Kingambit")
+    game["roster"]["p1"].append(_mon("Pelipper", active=False))
+    sim = SimState(game, snap)
+    sim.switch("p1", game["roster"]["p1"][1])
+    assert sim.snap["weather"] == "raindance"
+    game, snap = _mk("Corviknight", "Kingambit")
+    game["roster"]["p1"].append(_mon("Rillaboom", active=False))
+    sim = SimState(game, snap)
+    sim.switch("p1", game["roster"]["p1"][1])
+    assert sim.snap["terrain"] == "grassyterrain"
+
+
+def test_swift_swim_family_doubles_speed_in_weather():
+    game, snap = _mk("Barraskewda", "Corviknight")
+    base = SimState(game, snap).speed("p1")
+    snap2 = dict(snap, weather="raindance")
+    assert abs(SimState(game, snap2).speed("p1") - 2 * base) < 1e-6
+
+
 def test_damage_inference_learns_hidden_power():
     """Hits landing ~1.4x the usage-spread prediction reveal a Band/max-invest
     set; the engine should scale that attacker's future damage. Crits, faints

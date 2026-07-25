@@ -304,6 +304,11 @@ class SimState:
     def _opp(self, side: str) -> str:
         return "p2" if side == "p1" else "p1"
 
+    _WEATHER_SPEED = {"swiftswim": ("raindance", "rain", "primordialsea"),
+                      "chlorophyll": ("sunnyday", "sun", "desolateland"),
+                      "sandrush": ("sandstorm",),
+                      "slushrush": ("snow", "snowscape")}
+
     def speed(self, side: str) -> float:
         a = self.active[side]
         spe = a.stats["spe"] * boost_mult(a.boosts["spe"])
@@ -311,6 +316,8 @@ class SimState:
             spe *= 1.5
         if self.snap.get(f"{side}_screen_tailwind"):
             spe *= 2
+        if self.snap.get("weather", "") in self._WEATHER_SPEED.get(a.ability, ()):
+            spe *= 2  # Swift Swim / Chlorophyll / Sand Rush / Slush Rush
         return spe * (0.5 if a.status == "par" else 1.0)
 
     def _visible_spe_mult(self, side: str) -> float:
@@ -360,10 +367,33 @@ class SimState:
         if incoming.hp <= 0:
             incoming.fainted = True
             self.snap[f"{side}_fainted"] += 1
-        elif incoming.ability == "intimidate":
+            return
+        if incoming.ability == "intimidate":
             opp = self._opp(side)
+            foe = self.active[opp]
             self.snap[f"{opp}_boost_atk"] = max(-6, self.snap[f"{opp}_boost_atk"] - 1)
-            self.active[opp].boosts["atk"] = self.snap[f"{opp}_boost_atk"]
+            foe.boosts["atk"] = self.snap[f"{opp}_boost_atk"]
+            # Defiant/Competitive punish the drop with a bigger raise
+            if foe.ability == "defiant":
+                foe.boosts["atk"] = min(6, foe.boosts["atk"] + 2)
+                self.snap[f"{opp}_boost_atk"] = foe.boosts["atk"]
+            elif foe.ability == "competitive":
+                foe.boosts["spa"] = min(6, foe.boosts["spa"] + 2)
+                self.snap[f"{opp}_boost_spa"] = foe.boosts["spa"]
+        elif incoming.ability == "dauntlessshield":
+            incoming.boosts["def"] = min(6, incoming.boosts["def"] + 1)
+            self.snap[f"{side}_boost_def"] = incoming.boosts["def"]
+        # weather/terrain setters change the field the moment they land
+        surge_weather = {"drizzle": "raindance", "drought": "sunnyday",
+                         "sandstream": "sandstorm", "snowwarning": "snow"}
+        surge_terrain = {"grassysurge": "grassyterrain", "electricsurge": "electricterrain",
+                         "psychicsurge": "psychicterrain", "mistysurge": "mistyterrain"}
+        if (w := surge_weather.get(incoming.ability)) and self.snap.get("weather") != w:
+            self.snap["weather"] = w
+            self.field = {**self.field, "weather_set_turn": self.snap.get("turn", 0)}
+        elif (t := surge_terrain.get(incoming.ability)) and self.snap.get("terrain") != t:
+            self.snap["terrain"] = t
+            self.field = {**self.field, "terrain_set_turn": self.snap.get("turn", 0)}
 
     def damage_fraction(self, side: str, move: dict) -> float:
         atk, dfn = self.active[side], self.active[self._opp(side)]
@@ -565,6 +595,13 @@ class SimState:
                     and not any(t in STATUS_IMMUNE.get(move["sec_status"], ()) for t in opp.types)):
                 opp.status = move["sec_status"]
                 self.snap[f"{opp_side}_statused"] += 1
+            # Weak Armor: a physical hit sheds Defense but supercharges Speed
+            if (dealt > 0 and move.get("category") == "Physical"
+                    and opp.ability == "weakarmor" and not opp.fainted):
+                opp.boosts["def"] = max(-6, opp.boosts["def"] - 1)
+                opp.boosts["spe"] = min(6, opp.boosts["spe"] + 2)
+                self.snap[f"{opp_side}_boost_def"] = opp.boosts["def"]
+                self.snap[f"{opp_side}_boost_spe"] = opp.boosts["spe"]
             return
         if move.get("inflicts") and not opp.status and not opp.fainted \
                 and opp.sub_hp <= 0 \
@@ -573,21 +610,34 @@ class SimState:
             terrain_blocked = _grounded(opp) and (
                 terrain == "mistyterrain"
                 or (terrain == "electricterrain" and move["inflicts"] == "slp"))
-            if not terrain_blocked:
+            if opp.ability == "goodasgold":
+                pass  # immune to status moves aimed at it
+            elif opp.ability == "magicbounce":
+                # the status bounces back onto the user
+                if not me.status and status_lands(move["inflicts"], move["type"], me.types):
+                    me.status = move["inflicts"]
+                    self.snap[f"{side}_statused"] += 1
+            elif not terrain_blocked:
                 opp.status = move["inflicts"]
                 self.snap[f"{opp_side}_statused"] += 1
         if move.get("boosts"):
             target = me if move.get("target") == "self" else opp
-            if target is opp and opp.sub_hp > 0:
-                pass  # a substitute blocks stat drops aimed at the mon behind it
+            if target is opp and (opp.sub_hp > 0 or opp.ability == "goodasgold"):
+                pass  # a sub / Good as Gold blocks stat drops aimed at the target
+            elif target is opp and opp.ability == "magicbounce":
+                for stat, amt in move["boosts"].items():  # reflected onto the user
+                    if stat in me.boosts:
+                        me.boosts[stat] = max(-6, min(6, me.boosts[stat] + amt))
             else:
                 for stat, amt in move["boosts"].items():
                     if stat in target.boosts:
                         target.boosts[stat] = max(-6, min(6, target.boosts[stat] + amt))
         if move.get("side_condition") in HAZARDS:
             h = move["side_condition"]
-            self.snap[f"{opp_side}_hazard_{h}"] = min(
-                self.snap[f"{opp_side}_hazard_{h}"] + 1, HAZARD_MAX[h])
+            # Magic Bounce sends the hazard back onto the user's own side
+            hz_side = side if opp.ability == "magicbounce" else opp_side
+            self.snap[f"{hz_side}_hazard_{h}"] = min(
+                self.snap[f"{hz_side}_hazard_{h}"] + 1, HAZARD_MAX[h])
         elif move.get("side_condition") in SCREENS:
             self.snap[f"{side}_screen_{move['side_condition']}"] = 1
         if move.get("heal"):
@@ -644,7 +694,9 @@ class SimState:
                 continue
             delta = 0.0
             if a.ability != "magicguard":
-                if a.status == "brn":
+                if a.ability == "poisonheal" and a.status in ("psn", "tox"):
+                    delta += 1 / 8  # Gliscor: poison heals instead of chipping
+                elif a.status == "brn":
                     delta -= 1 / 16
                 elif a.status == "psn":
                     delta -= 1 / 8
@@ -832,6 +884,12 @@ def moves_for(mon: dict, snap: dict | None = None, side: str | None = None,
                 return False
             if opp_status:
                 return True  # can't apply a fresh major status over an existing one
+            if opp_ability == "goodasgold":
+                return True  # immune to status moves aimed at it
+            if opp_ability == "magicbounce":
+                return True  # would bounce back onto us
+            if opp_ability == "poisonheal" and m["inflicts"] in ("psn", "tox"):
+                return True  # poisoning a Poison Heal mon just heals it
             # the move's type must connect AND the target's type must take the status
             # (Thunder Wave/Electric vs Ground, Will-O-Wisp vs Fire, Toxic vs Steel...)
             return not status_lands(m["inflicts"], m["type"], opp_types)
@@ -850,6 +908,8 @@ def moves_for(mon: dict, snap: dict | None = None, side: str | None = None,
             # when the opponent has none left (their last Pokémon is on the field)
             if no_switchin and (sc in HAZARD_MAX or n in PHAZE_STATUS):
                 return True
+            if sc in HAZARD_MAX and opp_ability == "magicbounce":
+                return True  # the hazard would bounce onto our own side
             return (sc in HAZARD_MAX and snap[f"{opp}_hazard_{sc}"] >= HAZARD_MAX[sc]) \
                 or (sc in SCREENS and snap[f"{side}_screen_{sc}"])
 
