@@ -172,11 +172,42 @@ class BattleParser:
                 side.screens.discard(cond)
                 side.screen_turns.pop(cond, None)
 
+    def _capture_reveals(self, cmd: str, p: list[str]) -> None:
+        """Abilities/items revealed by [from]/[of] tags on any minor action —
+        Water Absorb immunities, Rocky Helmet chip, Leftovers heals, Intimidate
+        activations. Without this the advisor keeps trusting the usage-predicted
+        ability after the battle has already shown the real one.
+
+        [of] convention: on -damage lines the [of] Pokémon owns the effect
+        (Rough Skin / Rocky Helmet hurt the attacker); elsewhere the line's
+        subject owns it (absorb heals name the *attacker* in [of])."""
+        subject = p[2] if len(p) > 2 and p[2][:2] in self.sides else None
+        ability = item = of_ident = None
+        for part in p[3:]:
+            if part.startswith("[from] ability: "):
+                ability = part[len("[from] ability: "):]
+            elif part.startswith("ability: "):  # e.g. |-activate|MON|ability: X
+                ability = part[len("ability: "):]
+            elif part.startswith("[from] item: "):
+                item = part[len("[from] item: "):]
+            elif part.startswith("[of] "):
+                of_ident = part[len("[of] "):]
+        if ability is None and item is None:
+            return
+        owner = of_ident if (cmd == "-damage" and of_ident) else subject
+        if owner and (mon := self._mon(owner)):
+            if ability:
+                mon.ability = ability
+            if item:
+                mon.item, mon.item_consumed = item, False
+
     def feed(self, line: str) -> None:
         if not line.startswith("|"):
             return
         p = line.split("|")
         cmd = p[1]
+        if cmd.startswith("-"):
+            self._capture_reveals(cmd, p)
 
         if cmd == "tier":
             self.tier = p[2]

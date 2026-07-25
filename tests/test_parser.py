@@ -154,3 +154,30 @@ def test_disable_tracks_and_clears_the_named_move():
     for line in ["|switch|p1a: Kyurem|Kyurem|100/100", "|turn|3"]:
         p.feed(line)
     assert all(m["disabled"] == "" for m in roster_of(p)["p1"])
+
+
+def test_from_tag_reveals_ability_and_item():
+    """Abilities/items revealed via [from]/[of] tags must update the roster —
+    otherwise the advisor keeps trusting the usage-predicted ability after the
+    battle has shown the real one (the Water Absorb Clodsire bug)."""
+    from src.parser import BattleParser, roster_of
+    base = ("|player|p1|a|1|1000\n|player|p2|b|1|1000\n"
+            "|poke|p1|Samurott-Hisui, M|\n|poke|p2|Clodsire, M|\n|start\n"
+            "|switch|p1a: Samurott|Samurott-Hisui, M|100/100\n"
+            "|switch|p2a: Clodsire|Clodsire, M|100/100\n|turn|1\n")
+    # -immune form: subject owns the ability
+    p = BattleParser()
+    for ln in (base + "|-immune|p2a: Clodsire|[from] ability: Water Absorb").splitlines():
+        p.feed(ln)
+    assert next(m for m in roster_of(p)["p2"] if m["active"])["ability"] == "Water Absorb"
+    # -heal form with [of] naming the ATTACKER: still the subject's ability
+    p = BattleParser()
+    for ln in (base + "|-heal|p2a: Clodsire|100/100|[from] ability: Water Absorb"
+                      "|[of] p1a: Samurott").splitlines():
+        p.feed(ln)
+    assert next(m for m in roster_of(p)["p2"] if m["active"])["ability"] == "Water Absorb"
+    assert next(m for m in roster_of(p)["p1"] if m["active"])["ability"] == ""
+    # -damage form: the [of] mon owns the item (Rocky Helmet), not the victim
+    p.feed("|-damage|p1a: Samurott|84/100|[from] item: Rocky Helmet|[of] p2a: Clodsire")
+    assert next(m for m in roster_of(p)["p2"] if m["active"])["item"] == "Rocky Helmet"
+    assert next(m for m in roster_of(p)["p1"] if m["active"])["item"] == ""

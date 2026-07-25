@@ -141,13 +141,17 @@ def advise_for_request(log: str, request, booster, meta, mode: str = "deep") -> 
     if req.get("teamPreview"):
         rec = recommend_lead(game, side, booster, meta, snapshot_features)
         mons = (req.get("side") or {}).get("pokemon") or []
-        slot = 1
+        slot, picked = 1, None
         if len(rec):
             best = rec.iloc[0].lead
+            picked = f"lead {best}"
             slot = next((j + 1 for j, p in enumerate(mons)
                          if _species_of_details(p.get("details", "")) == best), 1)
-            out["table"] = rec.head(6).to_dict("records")
-        out["choose"], out["picked"] = f"team {slot}", f"lead {rec.iloc[0].lead}" if len(rec) else None
+            # same row shape as the in-battle table so the panel renders it
+            out["table"] = [{"action": f"lead {r.lead}", "worst_case": r.worst_case,
+                             "average": r.average, "worst_response": f"vs {r.worst_vs}"}
+                            for r in rec.head(6).itertuples()]
+        out["choose"], out["picked"] = f"team {slot}", picked
         return out
 
     pess = pessimism_for_elo(game.get(f"{opp}_rating"))
