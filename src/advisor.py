@@ -48,6 +48,14 @@ SWITCH_COST = 0.06
 # this the engine treats Wellspring's Ivy Cudgel as Grass and misses Water Absorb.
 IVY_CUDGEL_TYPE = {"ogerponwellspring": "water", "ogerponhearthflame": "fire",
                    "ogerponcornerstone": "rock"}
+# moves boosted 1.5x by Sharpness (Samurott-Hisui, Gallade, ...)
+SLICING_MOVES = {
+    "aircutter", "airslash", "aquacutter", "behemothblade", "bitterblade",
+    "ceaselessedge", "crosspoison", "cut", "furycutter", "kowtowcleave",
+    "leafblade", "mightycleave", "nightslash", "psyblade", "psychocut",
+    "razorleaf", "razorshell", "sacredsword", "secretsword", "slash",
+    "solarblade", "stoneaxe", "xscissor",
+}
 # reward for a net material lead (their faints minus mine) in the resulting
 # position: the win-prob model under-values KOs — after a kill the opponent's
 # next (fresh, scarier) Pokemon comes in, and the model reads that board as only
@@ -176,7 +184,11 @@ class _Active:
         self.fainted = mon["fainted"]
         self.sleep_turns = mon.get("sleep_turns", 0)
         self.tox_turns = mon.get("tox_turns", 0)
-        self.semiinvuln = "semiinvuln" in (mon.get("volatiles") or [])
+        self.volatiles = set(mon.get("volatiles") or [])
+        self.semiinvuln = "semiinvuln" in self.volatiles
+        self.sub_hp = 0.25 if "substitute" in self.volatiles else 0.0
+        self.acc_stage = mon.get("acc_stage", 0)
+        self.eva_stage = mon.get("eva_stage", 0)
         dex = lookup(mon["species"])
         self.orig_types = dex["types"] if dex else []
         tera = (mon.get("tera") or "").lower()
@@ -316,11 +328,20 @@ class SimState:
             a_stat *= 1.5
         if atk.ability == "supremeoverlord":
             a_stat *= 1 + 0.1 * self.snap.get(f"{side}_fainted", 0)
+        if off_owner is atk and physical and atk.ability in ("hugepower", "purepower"):
+            a_stat *= 2
+        # Ruin abilities dampen the OTHER side's stat (Ting-Lu, Gouging Fire, ...)
+        if (dfn.ability == "tabletsofruin" and physical) or \
+                (dfn.ability == "vesselofruin" and not physical):
+            a_stat *= 0.75
 
         def_stat = move.get("def_stat") or ("def" if physical else "spd")
         d_stat = dfn.stats[def_stat]
         if atk.ability != "unaware":
             d_stat *= boost_mult(dfn.boosts.get(def_stat, 0))
+        if (atk.ability == "swordofruin" and def_stat == "def") or \
+                (atk.ability == "beadsofruin" and def_stat == "spd"):
+            d_stat *= 0.75
         if dfn.item == "assaultvest" and not physical:
             d_stat *= 1.5
         if dfn.item == "eviolite":
@@ -337,6 +358,12 @@ class SimState:
         frac *= effectiveness(move["type"], dfn.types)
         if atk.item == "lifeorb":
             frac *= 1.3
+        if atk.ability == "sharpness" and norm_name(move.get("name", "")) in SLICING_MOVES:
+            frac *= 1.5
+        if "focusenergy" in atk.volatiles:
+            frac *= 1.25  # ~50% crit chance × 1.5 crit damage, in expectation
+        if "confusion" in atk.volatiles:
+            frac *= 2 / 3  # 33% chance to hit itself instead
         if dfn.ability in ("multiscale", "shadowshield") and dfn.hp >= 0.999:
             frac *= 0.5
         if dfn.ability == "thickfat" and move["type"] in ("fire", "ice"):
@@ -358,7 +385,12 @@ class SimState:
         if "auroraveil" in screens or ("reflect" in screens and physical) \
                 or ("lightscreen" in screens and not physical):
             frac *= 0.5
-        return frac * move.get("accuracy", 1.0)
+        # expected hit chance: base accuracy scaled by accuracy/evasion stages
+        acc = move.get("accuracy", 1.0) or 1.0
+        stage = max(-6, min(6, atk.acc_stage - dfn.eva_stage))
+        if stage:
+            acc = min(1.0, acc * ((3 + stage) / 3 if stage >= 0 else 3 / (3 - stage)))
+        return frac * acc
 
     def _sleep_talk_proxy(self, side: str) -> dict | None:
         """Sleep Talk calls another move; approximate with the best STAB attack."""
@@ -386,6 +418,15 @@ class SimState:
                     return
             else:
                 return
+        if "confusion" in me.volatiles:
+            # expected self-hit: 33% chance × a ~13% typeless 40 BP hit on itself
+            chip = min(0.33 * 0.13, me.hp)
+            me.hp -= chip
+            self.snap[f"{side}_hp_total"] -= chip
+            if me.hp <= 0:
+                me.fainted = True
+                self.snap[f"{side}_fainted"] += 1
+                return
         if norm_name(move.get("name", "")) == "rest":
             # full heal at the cost of sleeping; fails (pure no-op) at full HP
             if me.hp < 0.999:
@@ -395,24 +436,41 @@ class SimState:
                     self.snap[f"{side}_statused"] += 1
                 me.status = "slp"
             return
+        if norm_name(move.get("name", "")) == "substitute":
+            if me.sub_hp <= 0 and me.hp > 0.25:  # costs 25%; fails below that
+                me.hp -= 0.25
+                self.snap[f"{side}_hp_total"] -= 0.25
+                me.sub_hp = 0.25
+                me.volatiles.add("substitute")
+            return
         if move["category"] != "Status" and (move["power"] > 0 or move.get("fixed")):
             frac = self.damage_fraction(side, move)
-            dealt = min(frac, opp.hp)
-            if (opp.item == "focussash" and opp.hp >= 0.999 and dealt >= opp.hp):
-                dealt = opp.hp - 0.01  # Sash: survive one hit from full
+            if opp.sub_hp > 0 and frac > 0:
+                # the substitute soaks the hit; drain/recoil/contact still key off
+                # the absorbed amount, but the mon behind it is untouched
+                hit = min(frac, opp.sub_hp)
+                opp.sub_hp = max(0.0, opp.sub_hp - frac)
+                if opp.sub_hp <= 0:
+                    opp.volatiles.discard("substitute")
+                dealt = 0.0
+            else:
+                dealt = min(frac, opp.hp)
+                if (opp.item == "focussash" and opp.hp >= 0.999 and dealt >= opp.hp):
+                    dealt = opp.hp - 0.01  # Sash: survive one hit from full
+                hit = dealt
             opp.hp -= dealt
             self.snap[f"{opp_side}_hp_total"] -= dealt
             if opp.hp <= 0:
                 opp.hp, opp.fainted = 0.0, True
                 self.snap[f"{opp_side}_fainted"] += 1
-            if dealt > 0 and move.get("drain"):
-                healed = min(dealt * move["drain"], 1.0 - me.hp)
+            if hit > 0 and move.get("drain"):
+                healed = min(hit * move["drain"], 1.0 - me.hp)
                 me.hp += healed
                 self.snap[f"{side}_hp_total"] += healed
-            self_dmg = dealt * move.get("recoil", 0)
-            if dealt > 0 and me.item == "lifeorb":
+            self_dmg = hit * move.get("recoil", 0)
+            if hit > 0 and me.item == "lifeorb":
                 self_dmg += 0.1
-            if dealt > 0 and move.get("contact") and opp.item == "rockyhelmet" \
+            if hit > 0 and move.get("contact") and opp.item == "rockyhelmet" \
                     and not opp.fainted:
                 self_dmg += 1 / 6
             if self_dmg:
@@ -422,7 +480,8 @@ class SimState:
                 if me.hp <= 0:
                     me.fainted = True
                     self.snap[f"{side}_fainted"] += 1
-            # meaningful secondary status (Scald burn, Nuzzle para, ...)
+            # meaningful secondary status (Scald burn, Nuzzle para, ...) — a
+            # substitute blocks it (dealt is 0 while the sub is up)
             if (dealt > 0 and move.get("sec_status") and move.get("sec_chance", 0) >= 30
                     and not opp.status and not opp.fainted
                     and not any(t in STATUS_IMMUNE.get(move["sec_status"], ()) for t in opp.types)):
@@ -430,6 +489,7 @@ class SimState:
                 self.snap[f"{opp_side}_statused"] += 1
             return
         if move.get("inflicts") and not opp.status and not opp.fainted \
+                and opp.sub_hp <= 0 \
                 and status_lands(move["inflicts"], move["type"], opp.types):
             terrain = self.snap.get("terrain", "")
             terrain_blocked = _grounded(opp) and (
@@ -440,9 +500,12 @@ class SimState:
                 self.snap[f"{opp_side}_statused"] += 1
         if move.get("boosts"):
             target = me if move.get("target") == "self" else opp
-            for stat, amt in move["boosts"].items():
-                if stat in target.boosts:
-                    target.boosts[stat] = max(-6, min(6, target.boosts[stat] + amt))
+            if target is opp and opp.sub_hp > 0:
+                pass  # a substitute blocks stat drops aimed at the mon behind it
+            else:
+                for stat, amt in move["boosts"].items():
+                    if stat in target.boosts:
+                        target.boosts[stat] = max(-6, min(6, target.boosts[stat] + amt))
         if move.get("side_condition") in HAZARDS:
             h = move["side_condition"]
             self.snap[f"{opp_side}_hazard_{h}"] = min(
@@ -494,7 +557,8 @@ class SimState:
         self.upkeep()
 
     def upkeep(self) -> None:
-        """End-of-turn residuals: burn/poison/sand chip, Grassy Terrain healing."""
+        """End-of-turn residuals: burn/poison/sand chip, volatile chip (Leech
+        Seed / Salt Cure / Ghost Curse), Grassy Terrain healing, Yawn drowsiness."""
         weather = self.snap.get("weather", "")
         terrain = self.snap.get("terrain", "")
         for side, a in self.active.items():
@@ -510,12 +574,32 @@ class SimState:
                     delta -= min(a.tox_turns + 1, 15) / 16  # ramping toxic counter
                 if weather == "sandstorm" and not ({"rock", "ground", "steel"} & set(a.types)):
                     delta -= 1 / 16
+                if "leechseed" in a.volatiles:
+                    delta -= 1 / 8
+                    foe = self.active[self._opp(side)]
+                    if not foe.fainted:  # the seeder's side drains what we lose
+                        heal = min(1 / 8, 1.0 - foe.hp)
+                        foe.hp += heal
+                        self.snap[f"{self._opp(side)}_hp_total"] += heal
+                if "saltcure" in a.volatiles:
+                    delta -= 1 / 4 if ({"water", "steel"} & set(a.types)) else 1 / 8
+                if "curse" in a.volatiles:  # the Ghost-type Curse
+                    delta -= 1 / 4
             if a.item == "leftovers":
                 delta += 1 / 16
             elif a.item == "blacksludge":
                 delta += 1 / 16 if "poison" in a.types else -1 / 8
             if terrain == "grassyterrain" and _grounded(a):
                 delta += 1 / 16
+            # Yawn: drowsy this turn, asleep at the end of the next one
+            if "drowsy" in a.volatiles:
+                a.volatiles.discard("drowsy")
+                if not a.status:
+                    a.status = "slp"
+                    self.snap[f"{side}_statused"] += 1
+            elif "yawn" in a.volatiles:
+                a.volatiles.discard("yawn")
+                a.volatiles.add("drowsy")
             if not delta:
                 continue
             new_hp = max(0.0, min(1.0, a.hp + delta))

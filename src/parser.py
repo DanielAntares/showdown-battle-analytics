@@ -19,6 +19,8 @@ import re
 from dataclasses import dataclass, field
 
 BOOST_STATS = ("atk", "def", "spa", "spd", "spe")
+# volatiles Baton Pass hands to the incoming Pokémon (confusion/taunt stay behind)
+_BP_PASSED = {"substitute", "leechseed", "curse", "focusenergy", "aquaring", "ingrain"}
 HAZARD_MAX = {"stealthrock": 1, "spikes": 3, "toxicspikes": 2, "stickyweb": 1}
 SCREENS = ("reflect", "lightscreen", "auroraveil", "tailwind")
 
@@ -50,6 +52,7 @@ class Side:
     hazards: dict = field(default_factory=lambda: {h: 0 for h in HAZARD_MAX})
     screens: set = field(default_factory=set)
     volatiles: set = field(default_factory=set)  # encore/taunt/... on the active
+    acc_boosts: dict = field(default_factory=lambda: {"accuracy": 0, "evasion": 0})
     disabled: str = ""  # a move Disabled / Cursed-Body'd on the active ("" = none)
     last_move: str = ""  # last move the active used since switching in
     screen_turns: dict = field(default_factory=dict)  # screen -> turn it was set
@@ -151,8 +154,19 @@ class BattleParser:
         if status and status != "fnt":
             mon.status = status
         side.active = key
-        side.boosts = {s: 0 for s in BOOST_STATS}  # switching clears boosts
-        side.volatiles = set()  # ... and volatile states / move locks
+        # Baton Pass hands the incoming mon the boosts and passable volatiles;
+        # Shed Tail passes only the substitute. Anything else clears everything.
+        passing = _norm_condition(side.last_move) if side.last_move else ""
+        if passing == "batonpass":
+            side.volatiles &= _BP_PASSED
+        elif passing == "shedtail":
+            side.volatiles &= {"substitute"}
+            side.boosts = {s: 0 for s in BOOST_STATS}
+            side.acc_boosts = {"accuracy": 0, "evasion": 0}
+        else:
+            side.boosts = {s: 0 for s in BOOST_STATS}  # switching clears boosts
+            side.acc_boosts = {"accuracy": 0, "evasion": 0}
+            side.volatiles = set()  # ... and volatile states / move locks
         side.disabled = ""
         side.last_move = ""
         side.tox_turns = 0  # the toxic counter resets on switching out
@@ -333,21 +347,53 @@ class BattleParser:
                 mon.status = ""
         elif cmd in ("-boost", "-unboost", "-setboost"):
             side, stat = self.sides[_side_of(p[2])], p[3]
-            if stat in side.boosts:
+            table = side.boosts if stat in side.boosts else \
+                (side.acc_boosts if stat in side.acc_boosts else None)
+            if table is not None:
                 amount = int(p[4])
                 if cmd == "-setboost":
-                    side.boosts[stat] = amount
+                    table[stat] = amount
                 else:
                     sign = 1 if cmd == "-boost" else -1
-                    side.boosts[stat] = max(-6, min(6, side.boosts[stat] + sign * amount))
+                    table[stat] = max(-6, min(6, table[stat] + sign * amount))
         elif cmd == "-clearboost" or cmd == "-clearnegativeboost":
             side = self.sides[_side_of(p[2])]
-            for s, v in side.boosts.items():
-                if cmd == "-clearboost" or v < 0:
-                    side.boosts[s] = 0
+            for table in (side.boosts, side.acc_boosts):
+                for s, v in table.items():
+                    if cmd == "-clearboost" or v < 0:
+                        table[s] = 0
         elif cmd == "-clearallboost":
             for side in self.sides.values():
                 side.boosts = {s: 0 for s in BOOST_STATS}
+                side.acc_boosts = {"accuracy": 0, "evasion": 0}
+        elif cmd == "-copyboost":  # |-copyboost|USER|SOURCE (Psych Up)
+            if len(p) > 3 and p[2][:2] in self.sides and p[3][:2] in self.sides:
+                user, src = self.sides[_side_of(p[2])], self.sides[_side_of(p[3])]
+                user.boosts = dict(src.boosts)
+                user.acc_boosts = dict(src.acc_boosts)
+        elif cmd == "-swapboost":  # Guard Swap / Power Swap / Heart Swap
+            if len(p) > 3 and p[2][:2] in self.sides and p[3][:2] in self.sides:
+                a, b = self.sides[_side_of(p[2])], self.sides[_side_of(p[3])]
+                names = ([s.strip() for s in p[4].split(",")]
+                         if len(p) > 4 and p[4] and not p[4].startswith("[")
+                         else list(BOOST_STATS) + ["accuracy", "evasion"])
+                for s in names:
+                    if s in a.boosts:
+                        a.boosts[s], b.boosts[s] = b.boosts[s], a.boosts[s]
+                    elif s in a.acc_boosts:
+                        a.acc_boosts[s], b.acc_boosts[s] = b.acc_boosts[s], a.acc_boosts[s]
+        elif cmd == "-invertboost":  # Topsy-Turvy
+            side = self.sides[_side_of(p[2])]
+            side.boosts = {s: -v for s, v in side.boosts.items()}
+            side.acc_boosts = {s: -v for s, v in side.acc_boosts.items()}
+        elif cmd == "-transform":  # partial: copy boosts + known moves + ability
+            if len(p) > 3 and (user := self._mon(p[2])) and (tgt := self._mon(p[3])):
+                us, ts = self.sides[_side_of(p[2])], self.sides[_side_of(p[3])]
+                us.boosts, us.acc_boosts = dict(ts.boosts), dict(ts.acc_boosts)
+                user.moves |= set(tgt.moves)
+                if tgt.ability:
+                    user.ability = tgt.ability
+                us.volatiles.add("transformed")
         elif cmd == "-sidestart" or cmd == "-sideend":
             self._handle_side_condition(p[2], p[3], start=cmd == "-sidestart")
         elif cmd == "-swapsideconditions":  # Court Change
@@ -430,6 +476,8 @@ def roster_of(parser: BattleParser) -> dict:
                "ability": m.ability, "tera": m.tera,
                "uses": dict(m.uses), "sleep_turns": m.sleep_turns,
                "volatiles": sorted(side.volatiles) if key == side.active else [],
+               "acc_stage": side.acc_boosts["accuracy"] if key == side.active else 0,
+               "eva_stage": side.acc_boosts["evasion"] if key == side.active else 0,
                "disabled": side.disabled if key == side.active else "",
                "last_move": side.last_move if key == side.active else "",
                "tox_turns": side.tox_turns if key == side.active else 0,

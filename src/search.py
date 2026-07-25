@@ -54,6 +54,8 @@ def step(game: dict, actions: dict) -> dict:
             e["last_move"] = sim.acted[side][1] if kind == "move" else ""
             if kind != "move":  # a fresh switch-in has no volatiles / lock / disable
                 e["volatiles"], e["disabled"] = [], ""
+            else:  # volatile changes made by the engine persist (sub broken,
+                e["volatiles"] = sorted(a.volatiles)  # yawn -> drowsy, ...)
         for m in roster[side]:  # set the active flag; clear volatiles off the field
             was = m["active"]
             m["active"] = m["species"] == new_sp
