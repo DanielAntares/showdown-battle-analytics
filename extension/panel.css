@@ -1,0 +1,26 @@
+#psa-panel {
+  position: fixed;
+  right: 10px;
+  bottom: 10px;
+  z-index: 999999;
+  width: 260px;
+  background: rgba(24, 26, 31, 0.94);
+  color: #e8e8e6;
+  font: 12px/1.45 system-ui, sans-serif;
+  border: 1px solid #3a3d45;
+  border-radius: 8px;
+  padding: 8px 10px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+}
+#psa-head { font-weight: 700; margin-bottom: 4px; }
+#psa-winprob { float: right; color: #7dd87d; }
+#psa-status { color: #9a9da6; margin-bottom: 4px; word-break: break-all; }
+#psa-best { color: #ffd76a; font-weight: 600; margin: 4px 0; }
+#psa-table table { width: 100%; border-collapse: collapse; }
+#psa-table td, #psa-table th { text-align: left; padding: 1px 4px; }
+#psa-table th { color: #9a9da6; font-weight: 400; }
+#psa-table tr:first-child + tr td { color: #ffd76a; }
+#psa-opp { color: #8ab6ff; margin-top: 4px; }
+#psa-controls { margin-top: 6px; border-top: 1px solid #3a3d45; padding-top: 6px; }
+#psa-controls label { margin-right: 8px; cursor: pointer; }
+#psa-auto-label { color: #ff9d9d; }
