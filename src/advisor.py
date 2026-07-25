@@ -44,6 +44,10 @@ SCREEN_DURATION, FIELD_DURATION = 5, 5
 # so the advisor curbs reflexive switching AND isn't fooled into thinking a KO is
 # worthless just because the opponent could pivot the target out.
 SWITCH_COST = 0.06
+# Ogerpon's Ivy Cudgel takes the mask's type (stored as its Grass base) — without
+# this the engine treats Wellspring's Ivy Cudgel as Grass and misses Water Absorb.
+IVY_CUDGEL_TYPE = {"ogerponwellspring": "water", "ogerponhearthflame": "fire",
+                   "ogerponcornerstone": "rock"}
 # reward for a net material lead (their faints minus mine) in the resulting
 # position: the win-prob model under-values KOs — after a kill the opponent's
 # next (fresh, scarier) Pokemon comes in, and the model reads that board as only
@@ -533,6 +537,11 @@ def moves_for(mon: dict, snap: dict | None = None, side: str | None = None,
     moves = [dict(move_info(n), name=move_info(n)["name"]) for n in names if move_info(n)]
     if not moves:
         return _typical_moves(mon["species"])
+    mask_type = IVY_CUDGEL_TYPE.get(norm_name(mon["species"]))  # Ogerpon form -> Ivy Cudgel type
+    if mask_type:
+        for m in moves:
+            if norm_name(m["name"]) == "ivycudgel":
+                m["type"] = mask_type
 
     uses = mon.get("uses", {})
     moves = [m for m in moves

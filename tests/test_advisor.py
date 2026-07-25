@@ -147,6 +147,23 @@ def test_move_legality_filters():
     assert "Earthquake" not in names and "Extreme Speed" in names
 
 
+def test_ogerpon_ivy_cudgel_takes_the_mask_type():
+    """Ivy Cudgel is stored as Grass but takes the mask's type — Wellspring makes
+    it Water, so a Water Absorb foe is immune and the advisor must not offer it."""
+    from src.advisor import moves_for
+    game, snap = _sim_1v1("Ogerpon-Wellspring", "Volcanion")  # Volcanion: Water Absorb
+    me = game["roster"]["p1"][0]
+    me["moves"] = ["Ivy Cudgel", "Horn Leech", "Play Rough", "Swords Dance"]
+    assert "Ivy Cudgel" not in [m["name"] for m in moves_for(me, snap, "p1", game)]
+    # against a non-absorber it stays, and its type is corrected to Water
+    game2, snap2 = _sim_1v1("Ogerpon-Wellspring", "Great Tusk")
+    me2 = game2["roster"]["p1"][0]
+    me2["moves"] = ["Ivy Cudgel", "Horn Leech"]
+    offered = moves_for(me2, snap2, "p1", game2)
+    ivy = next(m for m in offered if m["name"] == "Ivy Cudgel")
+    assert ivy["type"] == "water"
+
+
 def test_hazards_and_phazing_dead_without_opponent_switchins():
     """Hazards and status phazing only pay off through a switch-in — the advisor
     must stop offering them once the opponent is down to their last Pokémon."""
