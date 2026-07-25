@@ -108,6 +108,12 @@ class BattleParser:
         self.winner: str | None = None
         self.snapshots: list[dict] = []
         self.events: dict[int, list] = {}  # turn -> what both players did
+        # observed move order: when both sides move in one turn, who went first
+        # and under which visible speed modifiers — the raw material for proving
+        # "their X is faster than my Y" instead of guessing from usage spreads
+        self.speed_obs: list[dict] = []
+        self._turn_first: tuple | None = None
+        self._turn_pair_done = False
 
     def _event(self, side: str, text: str, luck: bool = False) -> None:
         if self.turn >= 1:  # ignore pre-battle lead switches
@@ -171,6 +177,35 @@ class BattleParser:
             else:
                 side.screens.discard(cond)
                 side.screen_turns.pop(cond, None)
+
+    def _note_move_order(self, side_id: str, move: str) -> None:
+        """Record who moved first when both sides act in the same turn, along
+        with each side's *visible* speed modifiers at that instant (boost stage,
+        paralysis, Tailwind) and Trick Room. The advisor later normalizes these
+        away, so an observation like "my +2 mon went first" proves only
+        raw×2 > theirs — never the bare "mine is faster"."""
+        if self._turn_pair_done or self.turn < 1:
+            return
+        side = self.sides[side_id]
+        active = side.active_mon()
+        if active is None:
+            return
+        ctx = {"spe_stage": side.boosts["spe"], "status": active.status,
+               "tailwind": "tailwind" in side.screens}
+        if self._turn_first is None:
+            # species captured NOW — a U-turn pivot changes side.active before
+            # the opponent's move finalizes the observation
+            self._turn_first = (side_id, move, ctx, side.active)
+        elif self._turn_first[0] != side_id:
+            f_side, f_move, f_ctx, f_species = self._turn_first
+            self.speed_obs.append({
+                "turn": self.turn, "first": f_side, "second": side_id,
+                "first_move": f_move, "second_move": move,
+                "species": {f_side: f_species, side_id: side.active},
+                "ctx": {f_side: f_ctx, side_id: ctx},
+                "trickroom": "trickroom" in self.field,
+            })
+            self._turn_pair_done = True
 
     def _capture_reveals(self, cmd: str, p: list[str]) -> None:
         """Abilities/items revealed by [from]/[of] tags on any minor action —
@@ -241,6 +276,7 @@ class BattleParser:
                 mon.moves.add(p[3])
                 mon.uses[p[3]] = mon.uses.get(p[3], 0) + 1
                 self.sides[_side_of(p[2])].last_move = p[3]
+                self._note_move_order(_side_of(p[2]), p[3])
                 if _norm_condition(p[3]) in ("futuresight", "doomdesire"):
                     self.sides[_side_of(p[2])].future_pending = True
                 if "lockedmove" in line:  # emerged from Dig/Fly/... this turn
@@ -336,6 +372,7 @@ class BattleParser:
                 self._event(_side_of(p[2]), f"{mon.species} Terastallized ({p[3]})")
         elif cmd == "turn":
             self.turn = int(p[2])
+            self._turn_first, self._turn_pair_done = None, False
             for side in self.sides.values():  # tick status counters at turn starts
                 if active := side.active_mon():
                     if active.status == "slp":
@@ -426,6 +463,7 @@ def game_state(parser: BattleParser, id: str | None = None,
         },
         "snapshots": list(parser.snapshots),
         "events": dict(parser.events),
+        "speed_obs": list(parser.speed_obs),
     }
 
 

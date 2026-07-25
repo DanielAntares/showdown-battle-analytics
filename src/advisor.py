@@ -110,6 +110,46 @@ def boost_mult(stage: int) -> float:
     return (2 + stage) / 2 if stage >= 0 else 2 / (2 - stage)
 
 
+def _obs_mult(ctx: dict) -> float:
+    """The visible speed multiplier a side had when an observation was made."""
+    m = boost_mult(ctx.get("spe_stage", 0))
+    if ctx.get("status") == "par":
+        m *= 0.5
+    if ctx.get("tailwind"):
+        m *= 2.0
+    return m
+
+
+def speed_facts(game: dict) -> dict:
+    """Proven raw-speed relations from observed move order.
+
+    When both sides moved in one turn with equal move priority, the first mover
+    was effectively faster *under that turn's visible modifiers*. Normalizing
+    those away (boosts, paralysis, Tailwind; Trick Room flips who "won") yields
+    a durable fact about the mons' RAW speeds — item and spread included, which
+    is exactly what usage-based stat guesses get wrong (a Scarf or max-speed
+    variant reveals itself the first time it outspeeds something it "shouldn't").
+
+    Returns {(fast_species, slow_species): c} meaning raw(fast) > c · raw(slow),
+    keeping the strongest (largest) c per pair. An observation made at +2 only
+    proves raw×2 was faster — c=0.5 — so it can never be misread as "faster at
+    neutral", per the normalization.
+    """
+    facts: dict = {}
+    for o in game.get("speed_obs") or []:
+        pr1 = (move_info(o["first_move"]) or {}).get("priority", 0) or 0
+        pr2 = (move_info(o["second_move"]) or {}).get("priority", 0) or 0
+        if pr1 != pr2:
+            continue  # a priority mismatch explains the order by itself
+        f, s = o["first"], o["second"]
+        if o.get("trickroom"):
+            f, s = s, f  # under Trick Room the first mover is the SLOWER one
+        c = _obs_mult(o["ctx"][s]) / _obs_mult(o["ctx"][f])
+        key = (o["species"][f], o["species"][s])
+        facts[key] = max(facts.get(key, 0.0), c)
+    return facts
+
+
 def hazard_chip(species: str, side_snapshot_prefix: str, snapshot: dict,
                 item: str = "", ability: str = "") -> float:
     """Fraction of max HP lost to entry hazards when this species switches in."""
@@ -164,6 +204,7 @@ class SimState:
 
     def __init__(self, game: dict, snap: dict):
         self.snap = dict(snap)
+        self.game = game
         self.field = game.get("field") or {}
         self.rosters = game.get("roster") or {}
         self.active = {}
@@ -187,6 +228,40 @@ class SimState:
         if self.snap.get(f"{side}_screen_tailwind"):
             spe *= 2
         return spe * (0.5 if a.status == "par" else 1.0)
+
+    def _visible_spe_mult(self, side: str) -> float:
+        """Current visible modifiers only — same normalization speed_facts uses."""
+        a = self.active[side]
+        m = boost_mult(a.boosts["spe"])
+        if a.status == "par":
+            m *= 0.5
+        if self.snap.get(f"{side}_screen_tailwind"):
+            m *= 2.0
+        return m
+
+    def _observed_first(self) -> str | None:
+        """The side PROVEN to act first at equal priority under the *current*
+        modifiers, from move order observed earlier in the game — or None when
+        no observation covers this context (e.g. the fact was learned at +2 and
+        the boost is gone). Overrides the stat-guess ordering when it fires."""
+        facts = self.game.get("_speed_facts")
+        if facts is None:
+            facts = self.game["_speed_facts"] = speed_facts(self.game)
+        if not facts:
+            return None
+        a, b = self.active["p1"].species, self.active["p2"].species
+        ma, mb = self._visible_spe_mult("p1"), self._visible_spe_mult("p2")
+        faster = None
+        c = facts.get((a, b))
+        if c is not None and c * ma >= mb:   # raw_a > c·raw_b ⇒ a still wins now
+            faster = "p1"
+        elif (c2 := facts.get((b, a))) is not None and c2 * mb >= ma:
+            faster = "p2"
+        if faster is None:
+            return None
+        if self.snap.get("trickroom"):  # slower side acts first under Trick Room
+            return "p2" if faster == "p1" else "p1"
+        return faster
 
     def switch(self, side: str, mon: dict) -> None:
         old = self.active[side]
@@ -400,6 +475,13 @@ class SimState:
         trick_room = -1 if self.snap.get("trickroom") else 1
         movers.sort(key=lambda m: (m[1].get("priority", 0),
                                    trick_room * self.speed(m[0])), reverse=True)
+        # observed move order beats guessed stats: if the game already proved
+        # who's faster in this modifier context, honor it (equal priority only)
+        if (len(movers) == 2
+                and movers[0][1].get("priority", 0) == movers[1][1].get("priority", 0)
+                and (first := self._observed_first()) is not None
+                and movers[0][0] != first):
+            movers.reverse()
         for side, move in movers:
             if (norm_name(move.get("name", "")) in FAILS_VS_NONATTACK
                     and not attacking.get(self._opp(side))):
