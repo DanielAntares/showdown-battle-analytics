@@ -4,6 +4,8 @@
 
 const rooms = {}; // roomid -> { lines: [], request: null }
 const settings = { mode: "deep", auto: false };
+let sockjsMode = false;  // the official client wraps frames in SockJS framing
+let seenTraffic = false;
 
 chrome.storage.local.get(["psaMode", "psaAuto"], (v) => {
   if (v.psaMode) settings.mode = v.psaMode;
@@ -12,8 +14,34 @@ chrome.storage.local.get(["psaMode", "psaAuto"], (v) => {
 });
 
 document.addEventListener("psa-recv", (e) => {
-  try { handleMessage(String(e.detail)); } catch (err) { /* never break the client */ }
+  try {
+    if (!seenTraffic) {
+      seenTraffic = true;
+      setStatus("connected — waiting for a battle…");
+    }
+    for (const msg of unwrapFrames(String(e.detail))) handleMessage(msg);
+  } catch (err) { /* never break the client */ }
 });
+
+// The sim server speaks either raw protocol text or SockJS framing, depending
+// on how the client connected: 'o' = open, 'h' = heartbeat, 'c[...]' = close,
+// 'a["msg", ...]' = an array of protocol messages (JSON-escaped).
+function unwrapFrames(data) {
+  if (data === "o" || data.startsWith("h")) { sockjsMode = true; return []; }
+  if (data.startsWith("c")) return [];
+  if (data.startsWith("a")) {
+    sockjsMode = true;
+    try { return JSON.parse(data.slice(1)); } catch { return []; }
+  }
+  return [data]; // raw websocket: the frame IS the protocol message
+}
+
+// Outgoing commands must match the socket's framing.
+function sendCmd(cmd) {
+  document.dispatchEvent(new CustomEvent("psa-send", {
+    detail: sockjsMode ? JSON.stringify([cmd]) : cmd,
+  }));
+}
 
 function handleMessage(data) {
   if (!data.startsWith(">battle-")) return;
@@ -30,6 +58,9 @@ function handleMessage(data) {
       onRequest(room, st);
     } else {
       st.lines.push(line);
+      if (!st.request && line.startsWith("|turn|")) {
+        setStatus(room + " — watching (no decision request yet)");
+      }
       if (line.startsWith("|win|") || line.startsWith("|tie|")) {
         setStatus(room + " — battle ended");
       }
@@ -57,9 +88,7 @@ function onRequest(room, st) {
           : 1000 + Math.random() * 6000;
         setTimeout(() => {
           if (rooms[room] && rooms[room].request === req) { // still the live decision
-            document.dispatchEvent(new CustomEvent("psa-send", {
-              detail: room + "|/choose " + res.choose + "|" + req.rqid,
-            }));
+            sendCmd(room + "|/choose " + res.choose + "|" + req.rqid);
             setStatus(room + " — auto: " + res.choose);
           }
         }, delay);
@@ -77,7 +106,7 @@ function panel() {
   el.id = "psa-panel";
   el.innerHTML =
     '<div id="psa-head">Win-Prob Assistant <span id="psa-winprob"></span></div>' +
-    '<div id="psa-status">waiting for a battle…</div>' +
+    '<div id="psa-status">no socket yet — refresh the Showdown tab</div>' +
     '<div id="psa-best"></div><div id="psa-table"></div><div id="psa-opp"></div>' +
     '<div id="psa-controls">' +
     '<label><input type="radio" name="psa-mode" value="fast"> Fast</label> ' +
