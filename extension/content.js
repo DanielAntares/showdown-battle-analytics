@@ -50,7 +50,11 @@ function onRequest(room, st) {
       }
       renderAdvice(room, res);
       if (settings.auto && res.choose && req.rqid !== undefined) {
-        const delay = 1200 + Math.random() * 1800; // human-ish pause
+        // human-ish pause: usually 1-7 s, with an occasional (5%) long think of
+        // 10-15 s — real players sometimes stop and stare at a position
+        const delay = Math.random() < 0.05
+          ? 10000 + Math.random() * 5000
+          : 1000 + Math.random() * 6000;
         setTimeout(() => {
           if (rooms[room] && rooms[room].request === req) { // still the live decision
             document.dispatchEvent(new CustomEvent("psa-send", {
