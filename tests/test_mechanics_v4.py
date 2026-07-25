@@ -183,6 +183,54 @@ def test_confusion_and_focus_energy_and_evasion():
     assert sim.active["p1"].hp < 1.0
 
 
+def test_damage_inference_learns_hidden_power():
+    """Hits landing ~1.4x the usage-spread prediction reveal a Band/max-invest
+    set; the engine should scale that attacker's future damage. Crits, faints
+    and near-noise deviations must be ignored."""
+    from src.advisor import damage_mults, expected_hit
+    ctx = {"side": "p1", "move": "Earthquake", "crit": False, "turn": 3,
+           "attacker": "Dragonite", "atk_item": "", "atk_status": "", "atk_tera": "",
+           "atk_boosts": {}, "atk_fainted": 0, "defender": "Kingambit",
+           "def_item": "", "def_status": "", "def_tera": "", "def_boosts": {},
+           "def_screens": [], "weather": "", "terrain": ""}
+    exp = expected_hit({**ctx, "def_hp": 1.0, "after": 1.0})
+    assert exp > 0.3  # EQ is super-effective on Kingambit — sanity
+    hot = [{**ctx, "def_hp": 1.0, "after": 1.0 - exp * 1.4},
+           {**ctx, "def_hp": 0.55, "after": 0.55 - exp * 1.35}]
+    mults = damage_mults({"dmg_obs": hot})
+    assert 1.3 < mults[("Dragonite", "Physical")] <= 1.45
+    # deadband: ordinary damage-roll variance learns nothing
+    assert damage_mults({"dmg_obs": [{**ctx, "def_hp": 1.0, "after": 1.0 - exp * 1.05}]}) == {}
+    # crits are excluded
+    assert damage_mults({"dmg_obs": [{**ctx, "crit": True,
+                                      "def_hp": 1.0, "after": 1.0 - exp * 1.5}]}) == {}
+    # the engine applies the learned multiplier
+    game, snap = _mk("Dragonite", "Kingambit")
+    base = SimState(game, snap).damage_fraction("p1", _mv("Earthquake"))
+    game["dmg_obs"] = hot
+    game.pop("_dmg_mults", None)
+    adj = SimState(game, snap).damage_fraction("p1", _mv("Earthquake"))
+    assert 1.3 < adj / base <= 1.45
+
+
+def test_parser_records_damage_observations():
+    log = ("|player|p1|a|1|1000\n|player|p2|b|1|1000\n"
+           "|poke|p1|Dragonite, M|\n|poke|p2|Kingambit, M|\n|start\n"
+           "|switch|p1a: Dragonite|Dragonite, M|100/100\n"
+           "|switch|p2a: Kingambit|Kingambit, M|100/100\n|turn|1\n"
+           "|move|p1a: Dragonite|Earthquake|p2a: Kingambit\n"
+           "|-damage|p2a: Kingambit|42/100\n"
+           "|move|p2a: Kingambit|Sucker Punch|p1a: Dragonite\n"
+           "|-crit|p1a: Dragonite\n"
+           "|-damage|p1a: Dragonite|60/100\n|turn|2")
+    p = _feed(log)
+    obs = p.dmg_obs
+    assert len(obs) == 2
+    assert obs[0]["attacker"] == "Dragonite" and not obs[0]["crit"]
+    assert abs(obs[0]["def_hp"] - 1.0) < 1e-9 and abs(obs[0]["after"] - 0.42) < 1e-9
+    assert obs[1]["attacker"] == "Kingambit" and obs[1]["crit"]  # crit flagged
+
+
 def test_ruin_abilities_huge_power_sharpness():
     vr = SimState(*_mk("Iron Valiant", "Ting-Lu", p2kw={"ability": "Vessel of Ruin"})
                   ).damage_fraction("p1", _mv("Moonblast"))

@@ -117,6 +117,11 @@ class BattleParser:
         self.speed_obs: list[dict] = []
         self._turn_first: tuple | None = None
         self._turn_pair_done = False
+        # observed direct damage: how hard each hit actually landed, with the
+        # context needed to recompute what it SHOULD have done — deviations
+        # reveal hidden items/spreads (Band/Specs/max-invest vs the usage guess)
+        self.dmg_obs: list[dict] = []
+        self._pending_hit: dict | None = None
 
     def _event(self, side: str, text: str, luck: bool = False) -> None:
         if self.turn >= 1:  # ignore pre-battle lead switches
@@ -221,6 +226,27 @@ class BattleParser:
             })
             self._turn_pair_done = True
 
+    def _arm_damage_obs(self, side_id: str, move: str) -> None:
+        """Snapshot the attack's full context so the advisor can later recompute
+        the EXPECTED damage and compare it to what actually landed."""
+        atk_side = self.sides[side_id]
+        def_side = self.sides["p2" if side_id == "p1" else "p1"]
+        atk, dfn = atk_side.active_mon(), def_side.active_mon()
+        if atk is None or dfn is None:
+            self._pending_hit = None
+            return
+        self._pending_hit = {
+            "side": side_id, "move": move, "crit": False, "turn": self.turn,
+            "attacker": atk.species, "atk_item": atk.item, "atk_status": atk.status,
+            "atk_tera": atk.tera, "atk_boosts": dict(atk_side.boosts),
+            "atk_fainted": sum(m.fainted for m in atk_side.team.values()),
+            "defender": dfn.species, "def_item": dfn.item, "def_status": dfn.status,
+            "def_tera": dfn.tera, "def_boosts": dict(def_side.boosts),
+            "def_screens": sorted(def_side.screens),
+            "weather": self.weather,
+            "terrain": next((f for f in self.field if f.endswith("terrain")), ""),
+        }
+
     def _capture_reveals(self, cmd: str, p: list[str]) -> None:
         """Abilities/items revealed by [from]/[of] tags on any minor action —
         Water Absorb immunities, Rocky Helmet chip, Leftovers heals, Intimidate
@@ -291,6 +317,7 @@ class BattleParser:
                 mon.uses[p[3]] = mon.uses.get(p[3], 0) + 1
                 self.sides[_side_of(p[2])].last_move = p[3]
                 self._note_move_order(_side_of(p[2]), p[3])
+                self._arm_damage_obs(_side_of(p[2]), p[3])
                 if _norm_condition(p[3]) in ("futuresight", "doomdesire"):
                     self.sides[_side_of(p[2])].future_pending = True
                 if "lockedmove" in line:  # emerged from Dig/Fly/... this turn
@@ -300,6 +327,13 @@ class BattleParser:
             self.sides[_side_of(p[2])].volatiles.add("semiinvuln")
         elif cmd in ("-damage", "-heal", "-sethp"):
             if mon := self._mon(p[2]):
+                if (cmd == "-damage" and self._pending_hit
+                        and _side_of(p[2]) != self._pending_hit["side"]
+                        and not any(x.startswith("[from]") for x in p[3:])):
+                    o = self._pending_hit
+                    self._pending_hit = None  # one observation per move
+                    after, _ = _parse_hp(p[3])
+                    self.dmg_obs.append({**o, "def_hp": mon.hp, "after": after})
                 mon.hp, status = _parse_hp(p[3])
                 if status == "fnt":
                     mon.fainted = True
@@ -310,6 +344,8 @@ class BattleParser:
                 mon.hp, mon.fainted, mon.status = 0.0, True, ""
                 self._event(_side_of(p[2]), f"{mon.species} fainted")
         elif cmd == "-crit":
+            if self._pending_hit:
+                self._pending_hit["crit"] = True
             if mon := self._mon(p[2]):
                 self._event(_side_of(p[2]), f"{mon.species} took a critical hit", luck=True)
         elif cmd == "-miss":
@@ -419,6 +455,7 @@ class BattleParser:
         elif cmd == "turn":
             self.turn = int(p[2])
             self._turn_first, self._turn_pair_done = None, False
+            self._pending_hit = None
             for side in self.sides.values():  # tick status counters at turn starts
                 if active := side.active_mon():
                     if active.status == "slp":
@@ -512,6 +549,7 @@ def game_state(parser: BattleParser, id: str | None = None,
         "snapshots": list(parser.snapshots),
         "events": dict(parser.events),
         "speed_obs": list(parser.speed_obs),
+        "dmg_obs": list(parser.dmg_obs),
     }
 
 

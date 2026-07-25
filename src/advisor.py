@@ -158,6 +158,78 @@ def speed_facts(game: dict) -> dict:
     return facts
 
 
+def expected_hit(o: dict) -> float:
+    """What the engine would have predicted for an observed hit, rebuilt from
+    the observation's recorded context (boosts, status, screens, weather, Tera,
+    revealed items — unrevealed ones fall back to the usage guess, which is
+    exactly the belief we are testing)."""
+    def _m(sp, item, status, tera, hp=1.0):
+        return {"species": sp, "hp": hp, "status": status, "fainted": False,
+                "active": True, "moves": [], "item": item, "tera": tera,
+                "volatiles": [], "last_move": "", "acc_stage": 0, "eva_stage": 0}
+
+    game = {"roster": {
+        "p1": [_m(o["attacker"], o.get("atk_item", ""), o.get("atk_status", ""),
+                  o.get("atk_tera", ""))],
+        "p2": [_m(o["defender"], o.get("def_item", ""), o.get("def_status", ""),
+                  o.get("def_tera", ""), hp=o.get("def_hp", 1.0))]}}
+    snap = {"turn": o.get("turn", 5), "weather": o.get("weather", ""),
+            "terrain": o.get("terrain", ""), "trickroom": 0,
+            "p1_fainted": o.get("atk_fainted", 0), "p2_fainted": 0}
+    for s, boosts in (("p1", o.get("atk_boosts") or {}), ("p2", o.get("def_boosts") or {})):
+        snap.update({f"{s}_active_species": game["roster"][s][0]["species"],
+                     f"{s}_active_hp": game["roster"][s][0]["hp"],
+                     f"{s}_active_status": game["roster"][s][0]["status"],
+                     f"{s}_hp_total": 6.0, f"{s}_statused": 0, f"{s}_healthy": 6})
+        snap.update({f"{s}_boost_{b}": boosts.get(b, 0) for b in BOOST_STATS})
+        snap.update({f"{s}_hazard_{h}": 0 for h in HAZARD_MAX})
+        snap.update({f"{s}_screen_{sc}": 0 for sc in SCREENS})
+    for sc in o.get("def_screens") or []:
+        if sc in SCREENS:
+            snap[f"p2_screen_{sc}"] = 1
+    snap["p1_fainted"] = o.get("atk_fainted", 0)
+    info = move_info(o["move"])
+    if not info:
+        return 0.0
+    game["snapshots"] = [snap]
+    return SimState(game, snap).damage_fraction("p1", dict(info, name=o["move"]))
+
+
+def damage_mults(game: dict) -> dict:
+    """Hidden power revealed by observed damage: per (attacker species, category)
+    the median observed/expected ratio, when it deviates meaningfully.
+
+    A Banded/max-Attack variant of a mon the usage stats call defensive shows up
+    as ratios ~1.3–1.5 across its hits; the engine then scales that attacker's
+    future damage. Deliberately conservative: crits, multi-hit, fixed damage and
+    faint-truncated hits are skipped, a ±15% deadband absorbs damage-roll noise
+    (rolls alone are ±8%), and the multiplier clamps to [0.75, 1.45]."""
+    from statistics import median
+    ratios: dict = {}
+    for o in game.get("dmg_obs") or []:
+        if o.get("crit"):
+            continue
+        info = move_info(o["move"])
+        if not info or info.get("multihit", 1) != 1 or info.get("fixed") \
+                or not info.get("power", 0):
+            continue
+        if o.get("after", 1.0) <= 0.011:
+            continue  # faint/Sash truncated what we could observe
+        exp = expected_hit(o)
+        if exp < 0.04:
+            continue  # too small to separate signal from rounding
+        observed = o.get("def_hp", 1.0) - o.get("after", 1.0)
+        if observed <= 0:
+            continue
+        ratios.setdefault((o["attacker"], info["category"]), []).append(observed / exp)
+    out = {}
+    for key, rs in ratios.items():
+        m = median(rs)
+        if abs(m - 1.0) > 0.15:
+            out[key] = max(0.75, min(1.45, m))
+    return out
+
+
 def hazard_chip(species: str, side_snapshot_prefix: str, snapshot: dict,
                 item: str = "", ability: str = "") -> float:
     """Fraction of max HP lost to entry hazards when this species switches in."""
@@ -385,6 +457,12 @@ class SimState:
         if "auroraveil" in screens or ("reflect" in screens and physical) \
                 or ("lightscreen" in screens and not physical):
             frac *= 0.5
+        # observed-damage correction: if this attacker's hits have measured
+        # harder/softer than the usage-spread guess, trust the measurements
+        mults = self.game.get("_dmg_mults")
+        if mults is None:
+            mults = self.game["_dmg_mults"] = damage_mults(self.game)
+        frac *= mults.get((atk.species, move.get("category")), 1.0)
         # expected hit chance: base accuracy scaled by accuracy/evasion stages
         acc = move.get("accuracy", 1.0) or 1.0
         stage = max(-6, min(6, atk.acc_stage - dfn.eva_stage))
