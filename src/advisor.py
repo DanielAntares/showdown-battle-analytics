@@ -979,10 +979,16 @@ def _rank_by_pessimism(df: pd.DataFrame, pessimism: float) -> pd.DataFrame:
 
 
 def advise_search(game: dict, side: str, booster, meta, snapshot_features,
-                  pessimism: float = 1.0) -> pd.DataFrame:
+                  pessimism: float = 1.0, material=None, switch_cost=None,
+                  tera_cost=None) -> pd.DataFrame:
     """Rank `side`'s actions by a worst-case / expected blend (1-ply minimax).
     `pessimism` (see pessimism_for_elo) sets how adversarial the opponent is
-    assumed to be; 1.0 is the pure worst-case recommendation."""
+    assumed to be; 1.0 is the pure worst-case recommendation. The three scoring
+    corrections default to the module constants but can be overridden (None ->
+    default), which lets the self-play harness A/B them on vs off."""
+    material = MATERIAL_BONUS if material is None else material
+    switch_cost = SWITCH_COST if switch_cost is None else switch_cost
+    tera_cost = TERA_COST if tera_cost is None else tera_cost
     snap = game["snapshots"][-1]
     opp = "p2" if side == "p1" else "p1"
     mine, theirs = player_actions(game, side), player_actions(game, opp)
@@ -1005,11 +1011,11 @@ def advise_search(game: dict, side: str, booster, meta, snapshot_features,
     # material correction: reward positions where the opponent has lost more mons
     # than me, so a move that secures a KO isn't out-ranked by a passive one.
     mat = np.array([s[f"{opp}_fainted"] - s[f"{side}_fainted"] for s in snapshots])
-    mine_win = np.clip(mine_win + MATERIAL_BONUS * mat, 0.0, 1.0)
+    mine_win = np.clip(mine_win + material * mat, 0.0, 1.0)
     # symmetric tempo adjustment: my switch costs me, the opponent's switch credits me
-    my_switch = np.array([SWITCH_COST if a["kind"] == "switch" else 0.0 for a in mine])
-    opp_switch = np.array([SWITCH_COST if b["kind"] == "switch" else 0.0 for b in theirs])
-    my_tera = np.array([TERA_COST if a.get("tera") else 0.0 for a in mine])  # save Tera
+    my_switch = np.array([switch_cost if a["kind"] == "switch" else 0.0 for a in mine])
+    opp_switch = np.array([switch_cost if b["kind"] == "switch" else 0.0 for b in theirs])
+    my_tera = np.array([tera_cost if a.get("tera") else 0.0 for a in mine])  # save Tera
     grid = np.clip(mine_win.reshape(len(mine), len(theirs))
                    - my_switch[:, None] - my_tera[:, None] + opp_switch[None, :], 0.0, 1.0)
 

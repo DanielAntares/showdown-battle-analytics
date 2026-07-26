@@ -72,11 +72,14 @@ def _sample_opp_worlds(game: dict, opp: str, k: int, rng) -> list[dict]:
     return worlds
 
 
-def pooled_advise(game, side, booster, meta, pessimism, worlds, rng, mode="fast"):
+def pooled_advise(game, side, booster, meta, pessimism, worlds, rng, mode="fast",
+                  scoring=None):
     """Search once per determinized world and average the tables — the pooled
-    worst/average per action across plausible opponent sets."""
+    worst/average per action across plausible opponent sets. `scoring` overrides
+    the fast advisor's material/switch/tera corrections (for A/B ablation)."""
     opp = "p2" if side == "p1" else "p1"
     games = _sample_opp_worlds(game, opp, worlds, rng) if worlds > 1 else [game]
+    scoring = scoring or {}
     tables = []
     for g in games:
         if mode == "deep":
@@ -84,7 +87,7 @@ def pooled_advise(game, side, booster, meta, pessimism, worlds, rng, mode="fast"
                                       top_k=3, pessimism=pessimism))
         else:
             tables.append(advise_search(g, side, booster, meta, snapshot_features,
-                                        pessimism=pessimism))
+                                        pessimism=pessimism, **scoring))
     if len(tables) == 1:
         return tables[0]
     cat = pd.concat(tables)
@@ -126,7 +129,7 @@ def _pick(game, side, cfg, booster, meta, rng):
         return None
     pess = cfg.get("pessimism", 0.7)
     table = pooled_advise(game, side, booster, meta, pess, cfg.get("worlds", 1),
-                          rng, mode=cfg.get("mode", "fast"))
+                          rng, mode=cfg.get("mode", "fast"), scoring=cfg.get("scoring"))
     if not len(table):
         return None
     label = mixed_pick(table, rng, cfg.get("epsilon", 0.0)) if cfg.get("mixed") \
@@ -214,6 +217,11 @@ def main():
         a, b, label = {**base, "mixed": True, "epsilon": 0.05}, base, "+mixed-root vs baseline"
     elif variant == "deep":
         a, b, label = {"mode": "deep", "pessimism": 0.7}, base, "deep vs fast"
+    elif variant == "ablate":
+        # current scoring corrections vs raw win-prob ranking (all off)
+        a = base
+        b = {**base, "scoring": {"material": 0.0, "switch_cost": 0.0, "tera_cost": 0.0}}
+        label = "corrections ON vs OFF (raw model ranking)"
     else:
         a, b, label = base, base, "baseline vs baseline (sanity: expect ~50%)"
     print(f"A/B: {label}  |  {n} games\n")
