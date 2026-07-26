@@ -8,6 +8,7 @@ replay JSON. Resumable: replays already on disk are skipped, and the final
 Usage:
     python -m src.scrape                     # config.yaml defaults
     python -m src.scrape --pages 40          # bigger collection run
+    python -m src.scrape --target 100000     # page until 100k replays are on disk
     python -m src.scrape --before 1783400000 # continue from a cursor
 """
 
@@ -45,16 +46,24 @@ def fetch_page(session: requests.Session, format_id: str, before: int | None) ->
     return _get_json(session, SEARCH_URL, params)
 
 
-def scrape(pages: int, before: int | None = None) -> None:
+def scrape(pages: int | None, before: int | None = None, target: int | None = None) -> None:
     cfg = load_config()
     out_dir = cfg["paths"]["raw_replays"]
     out_dir.mkdir(parents=True, exist_ok=True)
     delay = cfg["request_delay_s"]
 
+    on_disk = len(list(out_dir.glob("*.json")))  # resumed runs count toward the target
+    if target and on_disk >= target:
+        print(f"Already have {on_disk} replays on disk (>= target {target}); nothing to do.")
+        return
+    # with a target, page until it's met (or the feed runs out); otherwise honour --pages
+    page_cap = (10 ** 9 if target else (pages or cfg["pages_per_run"]))
+
     session = requests.Session()
     downloaded = skipped = below_floor = failed = 0
-
-    for page in range(pages):
+    page = 0
+    hit_target = False
+    while page < page_cap and not hit_target:
         try:
             entries = fetch_page(session, cfg["format"], before)
         except requests.RequestException as exc:
@@ -68,7 +77,8 @@ def scrape(pages: int, before: int | None = None) -> None:
         rated = [e for e in entries if (e.get("rating") or 0) >= cfg["min_rating"]]
         below_floor += len(entries) - len(rated)
 
-        for entry in tqdm(rated, desc=f"page {page + 1}/{pages}", unit="replay"):
+        goal = f"/{target}" if target else f" (page {page + 1}/{page_cap})"
+        for entry in tqdm(rated, desc=f"{on_disk + downloaded}{goal}", unit="replay"):
             out_path = out_dir / f"{entry['id']}.json"
             if out_path.exists():
                 skipped += 1
@@ -80,19 +90,30 @@ def scrape(pages: int, before: int | None = None) -> None:
                 continue
             out_path.write_text(json.dumps(replay), encoding="utf-8")
             downloaded += 1
+            if target and on_disk + downloaded >= target:
+                hit_target = True
+                break
             time.sleep(delay)
+        page += 1
         time.sleep(delay)
 
     print(
         f"Done: {downloaded} downloaded, {skipped} already on disk, "
-        f"{below_floor} below the {cfg['min_rating']} rating floor, {failed} unavailable."
+        f"{below_floor} below the {cfg['min_rating']} rating floor, {failed} unavailable. "
+        f"Total on disk: {on_disk + downloaded}."
     )
-    print(f"Continue further back in time with: python -m src.scrape --before {before}")
+    if hit_target:
+        print(f"Reached the target of {target} replays.")
+    else:
+        print(f"Continue further back in time with: python -m src.scrape "
+              f"--before {before}" + (f" --target {target}" if target else ""))
 
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--pages", type=int, default=None, help="search pages to walk (51 replays each)")
     ap.add_argument("--before", type=int, default=None, help="uploadtime cursor to start from")
+    ap.add_argument("--target", type=int, default=None,
+                    help="page until this many replays are on disk (resumable); ignores --pages")
     args = ap.parse_args()
-    scrape(pages=args.pages or load_config()["pages_per_run"], before=args.before)
+    scrape(pages=args.pages, before=args.before, target=args.target)

@@ -16,7 +16,7 @@ engine for Showdown's own simulator.
 import numpy as np
 import pandas as pd
 
-from src.movesets import predict_moves, real_stats, species_set
+from src.movesets import predict_moves, real_stats, species_level, species_set
 from src.pokedex import effectiveness, lookup, move_info, norm_name
 from src.predict import calibrate
 
@@ -273,7 +273,8 @@ class _Active:
         self.stab_types = set(self.orig_types) | ({tera} if tera else set())
         self.item = predicted_item(mon)
         self.ability = predicted_ability(mon)
-        self.stats = dict(real_stats(mon["species"]))  # level-100, predicted spread
+        self.level = species_level(mon["species"])  # 100 standard, ~64-100 randbats
+        self.stats = dict(real_stats(mon["species"]))  # stats at that level, predicted spread
         if self.item == "boosterenergy" and self.ability in ("protosynthesis", "quarkdrive"):
             best = max((s for s in BOOST_STATS), key=lambda s: self.stats[s])
             self.stats[best] = int(self.stats[best] * (1.5 if best == "spe" else 1.3))
@@ -408,8 +409,8 @@ class SimState:
             return 0.0  # Levitate / Flash Fire / Water Absorb / ...
         if effectiveness(move["type"], dfn.types) == 0:
             return 0.0
-        if move.get("fixed"):  # Seismic Toss / Night Shade: level = 100 damage
-            dmg = 100 if move["fixed"] == "level" else float(move["fixed"])
+        if move.get("fixed"):  # Seismic Toss / Night Shade: damage = attacker level
+            dmg = atk.level if move["fixed"] == "level" else float(move["fixed"])
             return dmg / dfn.stats["hp"] * move.get("accuracy", 1.0)
 
         physical = move["category"] == "Physical"
@@ -456,7 +457,8 @@ class SimState:
         if weather in ("snow", "snowscape") and physical and "ice" in dfn.types:
             d_stat *= 1.5  # snow boosts Ice-types' Def
 
-        dmg = (42 * move["power"] * a_stat / d_stat) / 50 + 2
+        lvl_term = 2 * atk.level / 5 + 2  # 42 at L100; randbats mons hit at their level
+        dmg = (lvl_term * move["power"] * a_stat / d_stat) / 50 + 2
         frac = dmg / dfn.stats["hp"] * 0.925  # avg roll
         frac *= move.get("multihit", 1)
         frac *= 1.5 if move["type"] in atk.stab_types else 1.0

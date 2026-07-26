@@ -14,8 +14,25 @@ import streamlit as st
 
 from src.advisor import (active_pivot_move, advise_search, pessimism_for_elo,
                          pivot_targets, recommend_lead)
-from src.common import ROOT
-from src.movesets import moveset_with_probs, predict_spread, species_set
+from src.common import ROOT, load_config
+
+LADDER_FORMAT = load_config().get("format", "gen9ou")  # what to scrape / spectate
+
+
+def _wrong_format_warning(game: dict) -> str | None:
+    """Warn when a viewed game's format doesn't match what the model/sets target."""
+    fmt = game.get("format") or ""
+    if is_randbats_format():
+        if "andom" not in fmt:
+            return (f"This is a {fmt} game, but the project is configured for random "
+                    "battles — the model and set data are randbats-specific, so treat "
+                    "these probabilities with skepticism.")
+    elif "OU" not in fmt:
+        return (f"This is a {fmt} game; the model was trained on [Gen 9] OU, so treat "
+                "these probabilities with extra skepticism.")
+    return None
+from src.movesets import (is_randbats_format, moveset_with_probs, predict_spread,
+                          species_level, species_set)
 from src.live import LiveBattle, find_user_battle, list_battles
 from src.opponent import predict_actions
 from src.parser import extract_log, is_battle_log, parse_replay
@@ -192,19 +209,29 @@ def render_advisor(game: dict, names: dict, key_prefix: str) -> None:
         rest = " · ".join(f"{r.target} ({r.win:.0%})" for _, r in pivot_df.iloc[1:3].iterrows())
         st.info(f"↩️ **Pivot follow-up** — if you U-turn/Volt Switch out, bring in "
                 f"**{top.target}** ({top.win:.0%} win after)" + (f"  \nthen: {rest}" if rest else ""))
-    st.caption("⚠️ " + engine_note + " Unrevealed moves and EV/nature spreads are "
-               "predicted from ladder usage stats (see the sets below).")
+    randbats = is_randbats_format()
+    set_src = ("the official random-battle set generator (exact possible moves per role)"
+               if randbats else "ladder usage stats")
+    st.caption("⚠️ " + engine_note + f" Unrevealed moves are predicted from {set_src} "
+               "(see the sets below).")
 
-    with st.expander("🔮 Predicted sets in play (from ladder usage)"):
+    title = ("🔮 Predicted sets in play (from the randbats generator)" if randbats
+             else "🔮 Predicted sets in play (from ladder usage)")
+    with st.expander(title):
         for s in (side, "p2" if side == "p1" else "p1"):
             active = next((m for m in game["roster"][s] if m["active"]), None)
             if active:
                 who = "This side" if s == side else "Opponent"
                 st.markdown(f"*{who}'s active* — " +
                             predicted_set_md(active["species"], active.get("moves", ())))
-        st.caption("Predictions are species-level from Smogon usage at a rating "
-                   "baseline; they are not conditioned on the specific team, but ✓ "
-                   "marks moves this battle has already revealed.")
+        st.caption(
+            ("Random battles draw from a published pool: these are the *possible* "
+             "moves/items/Tera per role, and the set sharpens as revealed moves rule "
+             "roles out. ✓ marks moves this battle has already revealed."
+             ) if randbats else
+            ("Predictions are species-level from Smogon usage at a rating baseline; "
+             "they are not conditioned on the specific team, but ✓ marks moves this "
+             "battle has already revealed."))
 
 
 EV_LABELS = ["HP", "Atk", "Def", "SpA", "SpD", "Spe"]
@@ -228,7 +255,8 @@ def predicted_set_md(species: str, revealed=()) -> str:
     ability = entry["ability"][0][0] if entry.get("ability") else "?"
     tera = entry["tera"][0][0].title() if entry.get("tera") else "?"
     atk_iv = " · 0 Atk IV" if spread.get("atk_iv") == 0 else ""
-    return (f"**{species}** — likely {item}, {ability}, Tera {tera}  \n"
+    lvl = f" (L{species_level(species)})" if is_randbats_format() else ""
+    return (f"**{species}**{lvl} — likely {item}, {ability}, Tera {tera}  \n"
             f"Moves: {' · '.join(move_lines)}  \n"
             f"Spread: {nat} {evs}{atk_iv}")
 
@@ -546,9 +574,8 @@ def render_replay_analyzer() -> None:
     else:
         return
 
-    if "OU" not in (game["format"] or ""):
-        st.warning(f"This is a {game['format']} game; the model was trained on "
-                   "[Gen 9] OU, so treat these probabilities with extra skepticism.")
+    if (w := _wrong_format_warning(game)):
+        st.warning(w)
 
     p1, p2 = game["p1_name"], game["p2_name"]
     st.subheader(f"{p1} vs {p2}")
@@ -665,9 +692,8 @@ def live_panel() -> None:
         else:
             st.info("Connected — waiting for team preview…")
         return
-    if "OU" not in (game["format"] or "OU"):
-        st.warning(f"This looks like {game['format']}, not Gen 9 OU — the model was "
-                   "trained on OU, so predictions here are unreliable.")
+    if (w := _wrong_format_warning(game)):
+        st.warning(w)
     booster, meta = cached_model()
     probs = predict_game(game, booster, meta)
     c1, c2 = st.columns(2)
@@ -713,7 +739,7 @@ def render_live_spectator() -> None:
                            key="live_elo", label_visibility="collapsed")
     if c3.button("Watch random live battle"):
         with st.spinner("fetching the live battle list…"):
-            battles = list_battles()
+            battles = list_battles(LADDER_FORMAT)
         floor = 0 if min_elo == "any" else int(min_elo.rstrip("+"))
         pool = [b for b in battles if b["min_elo"] >= floor]
         if pool:

@@ -1,5 +1,6 @@
 # ---- data collection -------------------------------------------------------
-format: gen9ou          # Showdown format id (gen9ou, gen9randombattle, ...)
+format: gen9randombattle   # Showdown format id (gen9ou, gen9randombattle, ...)
+                           # randbats: authoritative sets via src.randbats (no usage stats)
 min_rating: 1300        # scrape floor; raised from 1100 (2026-07) for dataset v2
 pages_per_run: 2        # 51 replays/page; raise for full collection runs (40 ≈ 2k games)
 request_delay_s: 1.0    # polite rate limit for replay.pokemonshowdown.com

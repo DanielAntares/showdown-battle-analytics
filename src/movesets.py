@@ -24,11 +24,37 @@ Usage (rebuild the asset):
 import json
 from functools import lru_cache
 
+from src import randbats
 from src.common import ROOT, load_config
 from src.pokedex import STATS, load_moves, lookup, norm_name
 
 ASSET = ROOT / "assets" / "usage_sets.json"
 TOP_MOVES = 8
+
+
+def _randbats_mode() -> bool:
+    """Random-battle formats have authoritative published sets (src.randbats), so
+    the whole set/stat/level layer routes there instead of Smogon usage. Decided
+    once per process from config.format — set it to gen9randombattle to switch the
+    project to random battles."""
+    if not hasattr(_randbats_mode, "_v"):
+        try:
+            fmt = str(load_config().get("format", "")).lower()
+        except Exception:
+            fmt = ""
+        _randbats_mode._v = "random" in fmt
+    return _randbats_mode._v
+
+
+def is_randbats_format() -> bool:
+    """Public: is the project currently in random-battle mode? (config.format)"""
+    return _randbats_mode()
+
+
+def species_level(species: str) -> int:
+    """The battle level for this species — fixed per species in randbats
+    (~L64-100), a flat 100 in standard formats."""
+    return randbats.species_level(species) if _randbats_mode() else 100
 
 # nature -> (boosted stat, lowered stat); neutral natures omitted
 NATURES = {
@@ -54,6 +80,8 @@ def load_sets() -> dict:
 
 
 def species_set(species: str) -> dict | None:
+    if _randbats_mode():
+        return randbats.species_set(species)
     return load_sets().get(norm_name(species))
 
 
@@ -76,10 +104,14 @@ def _predict_moves_cached(species: str, revealed: tuple, k: int) -> list[str]:
 
 def predict_moves(species: str, revealed=(), k: int = 4) -> list[str]:
     """Most likely k moves (as display names), always keeping revealed ones."""
+    if _randbats_mode():
+        return randbats.predict_moves(species, revealed, k)
     return _predict_moves_cached(species, tuple(revealed), k)
 
 
 def moveset_with_probs(species: str, k: int = TOP_MOVES) -> list[tuple[str, float]]:
+    if _randbats_mode():
+        return randbats.moveset_with_probs(species, k)
     entry = species_set(species)
     if not entry:
         return []
@@ -89,6 +121,8 @@ def moveset_with_probs(species: str, k: int = TOP_MOVES) -> list[tuple[str, floa
 
 def predict_spread(species: str) -> dict:
     """Most common (nature, EVs) plus an inferred Atk IV; neutral 85s if unknown."""
+    if _randbats_mode():
+        return randbats.predict_spread(species)
     entry = species_set(species)
     if entry and entry.get("spread"):
         return entry["spread"]
@@ -97,7 +131,10 @@ def predict_spread(species: str) -> dict:
 
 @lru_cache(maxsize=2048)
 def real_stats(species: str) -> dict:
-    """Level-100 stats from base + predicted EV spread + nature (IV 31, or 0 Atk)."""
+    """Level-aware stats from base + predicted EV spread + nature (IV 31, or 0 Atk).
+    Level 100 in standard formats; the species' randbats level otherwise."""
+    if _randbats_mode():
+        return randbats.real_stats(species)
     dex = lookup(species)
     if not dex:
         return {s: 160 for s in STATS}
