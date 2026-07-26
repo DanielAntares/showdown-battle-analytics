@@ -135,17 +135,24 @@ def _pick(game, side, cfg, booster, meta, rng):
     return next((a for a in acts if a["label"] == label), acts[0] if acts else None)
 
 
+_ERRORS: list = []  # edge-case failures caught during play, for diagnosis
+
+
 def play_game(team_a, team_b, cfg_a, cfg_b, booster, meta, rng, max_turns=100):
     game = new_game(team_a, team_b, int(rng.integers(6)), int(rng.integers(6)),
                     cfg_a.get("elo", 1500))
     for _ in range(max_turns):
         if is_over(game):
             break
-        a, b = (_pick(game, "p1", cfg_a, booster, meta, rng),
-                _pick(game, "p2", cfg_b, booster, meta, rng))
-        if a is None or b is None:
-            break
-        game = step(game, {"p1": a, "p2": b})
+        try:  # an approximate engine occasionally hits an odd state — don't let
+            a, b = (_pick(game, "p1", cfg_a, booster, meta, rng),  # one game kill the run
+                    _pick(game, "p2", cfg_b, booster, meta, rng))
+            if a is None or b is None:
+                break
+            game = step(game, {"p1": a, "p2": b})
+        except Exception as e:
+            _ERRORS.append(f"t{game['snapshots'][-1].get('turn')} {type(e).__name__}: {e}")
+            break  # adjudicate on the state reached so far
     r = game["roster"]
     dead = {s: all(m["fainted"] for m in r[s]) for s in ("p1", "p2")}
     if dead["p2"] and not dead["p1"]:
