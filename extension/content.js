@@ -86,10 +86,11 @@ function onRequest(room, st) {
         const delay = Math.random() < 0.05
           ? 10000 + Math.random() * 5000
           : 1000 + Math.random() * 6000;
+        const cmd = res.choose_mixed || res.choose; // mix near-ties when auto-playing
         setTimeout(() => {
           if (rooms[room] && rooms[room].request === req) { // still the live decision
-            sendCmd(room + "|/choose " + res.choose + "|" + req.rqid);
-            setStatus(room + " — auto: " + res.choose);
+            sendCmd(room + "|/choose " + cmd + "|" + req.rqid);
+            setStatus(room + " — auto: " + cmd);
           }
         }, delay);
       }

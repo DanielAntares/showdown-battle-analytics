@@ -62,6 +62,9 @@ SLICING_MOVES = {
 # marginally better, so a lethal move can tie or lose to a setup/hazard move on
 # noise. This nudge makes securing a KO count. deep_search shares this constant.
 MATERIAL_BONUS = 0.03
+# Tera is a once-per-battle resource. Charge a small cost so it's only recommended
+# when it beats the un-Tera'd line by more than this — never burned on a coin flip.
+TERA_COST = 0.04
 # phazing moves that ONLY force a switch (no damage) — useless with no switch-in
 PHAZE_STATUS = {"whirlwind", "roar"}
 
@@ -1006,8 +1009,9 @@ def advise_search(game: dict, side: str, booster, meta, snapshot_features,
     # symmetric tempo adjustment: my switch costs me, the opponent's switch credits me
     my_switch = np.array([SWITCH_COST if a["kind"] == "switch" else 0.0 for a in mine])
     opp_switch = np.array([SWITCH_COST if b["kind"] == "switch" else 0.0 for b in theirs])
+    my_tera = np.array([TERA_COST if a.get("tera") else 0.0 for a in mine])  # save Tera
     grid = np.clip(mine_win.reshape(len(mine), len(theirs))
-                   - my_switch[:, None] + opp_switch[None, :], 0.0, 1.0)
+                   - my_switch[:, None] - my_tera[:, None] + opp_switch[None, :], 0.0, 1.0)
 
     rows = []
     for i, a in enumerate(mine):

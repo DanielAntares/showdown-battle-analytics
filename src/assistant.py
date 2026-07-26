@@ -154,8 +154,14 @@ def advise_for_request(log: str, request, booster, meta, mode: str = "deep") -> 
         out["choose"], out["picked"] = f"team {slot}", picked
         return out
 
+    import numpy as np
+    from src.selfplay import mixed_pick, pooled_advise
+    rng = np.random.default_rng(req.get("rqid") or 0)
     pess = pessimism_for_elo(game.get(f"{opp}_rating"))
-    if mode == "deep":
+    worlds = int(req.get("_worlds") or 1)  # opponent determinization (opt-in)
+    if worlds > 1:
+        table = pooled_advise(game, side, booster, meta, pess, worlds, rng, mode=mode)
+    elif mode == "deep":
         table = deep_search(game, side, booster, meta,
                             depth=2, rollout=3, top_k=3, pessimism=pess)
     else:
@@ -164,6 +170,11 @@ def advise_for_request(log: str, request, booster, meta, mode: str = "deep") -> 
     rows = table.to_dict("records")
     out["choose"], out["picked"] = map_choice(rows, req)
     out["table"] = rows[:5]
+    # auto-play mixes among near-tied top moves so the bot isn't exploitably
+    # deterministic; manual mode still shows/plays the outright best (choose).
+    lbl = mixed_pick(table, rng, 0.04)
+    prioritized = ([r for r in rows if r["action"] == lbl] + rows) if lbl else rows
+    out["choose_mixed"] = map_choice(prioritized, req)[0] if rows else out["choose"]
 
     try:  # what the opponent is likely to do (behaviour model; optional)
         from src.opponent import predict_actions

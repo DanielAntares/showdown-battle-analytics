@@ -22,8 +22,9 @@ turn, so the output can feed straight back in for the next turn.
 import numpy as np
 import pandas as pd
 
-from src.advisor import (MATERIAL_BONUS, SWITCH_COST, SimState, effectiveness,
-                         is_pure_setup, lookup, moves_for, player_actions)
+from src.advisor import (MATERIAL_BONUS, SWITCH_COST, TERA_COST, SimState,
+                         effectiveness, is_pure_setup, lookup, moves_for,
+                         player_actions)
 from src.predict import calibrate, snapshot_features
 
 
@@ -237,6 +238,8 @@ def deep_search(game: dict, side: str, booster, meta, depth: int = 2,
         # win on noise and the advice ping-pongs between walls turn after turn.
         if a["kind"] == "switch":
             vals = [max(0.0, v - SWITCH_COST) for v in vals]
+        if a.get("tera"):  # save the once-per-battle Tera unless it clearly helps
+            vals = [max(0.0, v - TERA_COST) for v in vals]
         rows.append({"action": a["label"], "worst_case": float(min(vals)),
                      "average": float(sum(vals) / len(vals)),
                      "worst_response": opp_acts[int(np.argmin(vals))]["label"]})
