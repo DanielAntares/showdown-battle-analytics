@@ -16,6 +16,7 @@ stats_baseline: 1500    # rating cutoff of the stats file (0/1500/1695/1825); 15
 
 # ---- paths (relative to repo root) ------------------------------------------
 paths:
-  raw_replays: data/raw/replays
+  raw_replays: data/raw/replays_randbats   # own folder so randbats + old OU replays never mix
+                                           # (--target counts only files here; build_dataset reads only here)
   raw_stats: data/raw/stats
   processed: data/processed
