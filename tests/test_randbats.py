@@ -1,16 +1,25 @@
 """Random-battle set/level layer: authoritative sets, per-species levels, role
 narrowing, and a level-aware damage engine. All opt into `randbats_mode`."""
 
+import json
+import re
+from pathlib import Path
+
 import pytest
 
 import src.movesets as movesets
 import src.randbats as randbats
 from src.advisor import SimState, advise_search, player_actions
+from src.assistant import advise_for_request, build_game
+from src.parser import parse_replay
+from src.pokedex import move_info, norm_name
 from src.predict import load_model, snapshot_features
-from src.pokedex import move_info
 from src.selfplay import new_game
 
 pytestmark = pytest.mark.usefixtures("randbats_mode")
+
+RB_REPLAY = Path(__file__).parent / "fixtures" / "gen9randombattle-2648177511.json"
+CHOOSE = re.compile(r"^(move \d( terastallize)?|switch \d|team \d)$")
 
 
 def test_species_carry_their_real_level():
@@ -78,3 +87,39 @@ def test_advisor_runs_end_to_end_in_randbats():
     out = advise_search(g, "p1", booster, meta, snapshot_features, pessimism=0.7)
     assert len(out) and out.worst_case.between(0, 1).all()
     assert player_actions(g, "p1")
+
+
+def _log_until_turn(log: str, turn: int) -> str:
+    out = []
+    for ln in log.splitlines():
+        out.append(ln)
+        if ln.startswith(f"|turn|{turn}"):
+            break
+    return "\n".join(out)
+
+
+def test_live_assistant_produces_a_legal_choice_on_a_real_randbats_game():
+    """The extension bridge (advise_for_request) on an actual downloaded randbats
+    replay: it must return a legal /choose, a sane win-prob, and — proof the level
+    layer flows through the live path — the active mon at its real randbats level."""
+    booster, meta = load_model()
+    replay = json.loads(RB_REPLAY.read_text(encoding="utf-8"))
+    assert "Random Battle" in (parse_replay(replay)["format"] or "")
+    log = _log_until_turn(replay["log"], 6)
+    game = build_game(log)
+    side = "p1"
+    active = next(m for m in game["roster"][side] if m["active"])
+    assert 60 <= movesets.species_level(active["species"]) < 100  # not a flat L100
+
+    roster = game["roster"][side]
+    pokemon = [{"details": m["species"], "active": m["active"],
+                "condition": "0 fnt" if m["fainted"] else "100/100",
+                "item": "", "moves": []} for m in roster]
+    names = movesets.predict_moves(active["species"], active.get("moves", ()), 4)
+    req = {"side": {"id": side, "pokemon": pokemon}, "rqid": 5,
+           "active": [{"moves": [{"move": n, "id": norm_name(n), "disabled": False}
+                                 for n in names]}]}
+    res = advise_for_request(log, req, booster, meta, mode="fast")
+    assert res["ok"] and CHOOSE.match(res["choose"])
+    assert CHOOSE.match(res["choose_mixed"])
+    assert res["winprob"] is None or 0.0 <= res["winprob"] <= 1.0
