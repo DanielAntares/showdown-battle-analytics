@@ -21,6 +21,10 @@ from dataclasses import dataclass, field
 BOOST_STATS = ("atk", "def", "spa", "spd", "spe")
 # volatiles Baton Pass hands to the incoming Pokémon (confusion/taunt stay behind)
 _BP_PASSED = {"substitute", "leechseed", "curse", "focusenergy", "aquaring", "ingrain"}
+# only these two-turn moves make the user semi-invulnerable; charge moves like
+# Meteor Beam / Solar Beam / Sky Attack also emit |-prepare| but stay hittable
+_SEMI_INVULN_MOVES = {"dig", "dive", "fly", "bounce", "phantomforce", "shadowforce",
+                      "skydrop"}
 HAZARD_MAX = {"stealthrock": 1, "spikes": 3, "toxicspikes": 2, "stickyweb": 1}
 SCREENS = ("reflect", "lightscreen", "auroraveil", "tailwind")
 
@@ -323,8 +327,9 @@ class BattleParser:
                 if "lockedmove" in line:  # emerged from Dig/Fly/... this turn
                     self.sides[_side_of(p[2])].volatiles.discard("semiinvuln")
                 self._event(_side_of(p[2]), f"{mon.species} used {p[3]}")
-        elif cmd == "-prepare":  # charging a two-turn move (Dig/Fly/...) -> invulnerable
-            self.sides[_side_of(p[2])].volatiles.add("semiinvuln")
+        elif cmd == "-prepare":  # charging a two-turn move; only Dig/Fly/... hide the
+            if len(p) > 3 and _norm_condition(p[3]) in _SEMI_INVULN_MOVES:  # user
+                self.sides[_side_of(p[2])].volatiles.add("semiinvuln")
         elif cmd in ("-damage", "-heal", "-sethp"):
             if mon := self._mon(p[2]):
                 if (cmd == "-damage" and self._pending_hit

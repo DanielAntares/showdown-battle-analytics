@@ -156,6 +156,31 @@ def test_disable_tracks_and_clears_the_named_move():
     assert all(m["disabled"] == "" for m in roster_of(p)["p1"])
 
 
+def test_charge_move_prepare_does_not_hide_the_user():
+    """Meteor Beam / Solar Beam / Sky Attack emit |-prepare| just like Dig/Fly but
+    keep the user fully hittable. Flagging them semi-invulnerable (and never
+    clearing it, since Power Herb fires them in one turn) made every attack read as
+    a 0-damage whiff — so the advisor was forced to switch turn after turn (the
+    Glimmora Meteor Beam ping-pong in gen9randombattle-2656531368)."""
+    from src.parser import BattleParser, roster_of
+
+    def prepare(species, move):
+        log = (f"|player|p1|a|1|1000\n|player|p2|b|1|1000\n"
+               f"|poke|p1|Persian, M|\n|poke|p2|{species}, M|\n|start\n"
+               f"|switch|p1a: Persian|Persian, M|100/100\n"
+               f"|switch|p2a: {species}|{species}, M|100/100\n|turn|1\n"
+               f"|move|p2a: {species}|{move}||[still]\n|-prepare|p2a: {species}|{move}")
+        p = BattleParser()
+        for ln in log.splitlines():
+            p.feed(ln)
+        return next(m for m in roster_of(p)["p2"] if m["active"])["volatiles"]
+
+    assert "semiinvuln" not in prepare("Glimmora", "Meteor Beam")  # charge, stays visible
+    assert "semiinvuln" not in prepare("Venusaur", "Solar Beam")
+    assert "semiinvuln" in prepare("Dugtrio", "Dig")               # truly underground
+    assert "semiinvuln" in prepare("Corviknight", "Fly")
+
+
 def test_from_tag_reveals_ability_and_item():
     """Abilities/items revealed via [from]/[of] tags must update the roster —
     otherwise the advisor keeps trusting the usage-predicted ability after the
