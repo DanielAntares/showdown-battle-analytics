@@ -6,7 +6,8 @@ pages_per_run: 2        # 51 replays/page; raise for full collection runs (40 â‰
 request_delay_s: 1.0    # polite rate limit for replay.pokemonshowdown.com
 
 # ---- modeling ----------------------------------------------------------------
-test_split_date: "2026-07-01"   # games uploaded on/after this date form the test set
+test_split_date: "2026-07-13"   # games uploaded on/after this date form the test set
+                                # 07-13 gives ~80/20 on the randbats window (05-27..07-26)
 train_min_rating: 1300          # older low-elo games stay on disk (skill-band analysis)
                                 # but are excluded from model training
 

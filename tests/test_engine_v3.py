@@ -282,8 +282,15 @@ def test_switch_carries_a_tempo_cost(monkeypatch):
     costed = adv.advise_search(game, "p1", booster, meta, snapshot_features).set_index("action")
     switches = [a for a in free.index if a.startswith("switch")]
     assert switches, "expected some switch options in this position"
-    for a in switches:  # every switch scores strictly lower once the cost applies
-        assert costed.loc[a, "worst_case"] < free.loc[a, "worst_case"]
+    # the cost never *raises* a switch...
+    for a in switches:
+        assert costed.loc[a, "worst_case"] <= free.loc[a, "worst_case"] + 1e-9
+    # ...and lowers at least one. (It doesn't bite when the worst-case response is
+    # the opponent *also* switching — switch-vs-switch is tempo-neutral, so the
+    # opp_switch term cancels our cost. It only charges tempo when they can punish
+    # our switch with an attack.)
+    assert any(costed.loc[a, "worst_case"] < free.loc[a, "worst_case"] - 1e-9
+               for a in switches)
 
 
 def test_choice_lock_into_immune_leaves_only_switches():
