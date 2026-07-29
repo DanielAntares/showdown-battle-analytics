@@ -89,6 +89,36 @@ def test_advisor_runs_end_to_end_in_randbats():
     assert player_actions(g, "p1")
 
 
+def test_unrevealed_reserves_become_switch_options():
+    """Random battles have no team preview, so our bench only exists in the request.
+    _apply_request must merge it into the roster or the advisor can never suggest
+    switching to a reserve it hasn't seen yet (the "no switch suggestions" bug)."""
+    from src.advisor import player_actions
+    replay = json.loads(RB_REPLAY.read_text(encoding="utf-8"))
+    p1_team = [m["species"] for m in parse_replay(replay)["roster"]["p1"]]  # all 6
+    log = "\n".join(replay["log"].splitlines()[:_first_index_after_turn(replay["log"], 6)])
+    bare = build_game(log)
+    revealed = {m["species"] for m in bare["roster"]["p1"]}
+    hidden = [s for s in p1_team if s not in revealed]
+    assert hidden, "fixture should have an unrevealed reserve by turn 6"
+    active_sp = next(m["species"] for m in bare["roster"]["p1"] if m["active"])
+    pokemon = [{"details": sp, "active": sp == active_sp, "condition": "100/100",
+                "item": "", "moves": []} for sp in p1_team]
+    game = build_game(log, {"side": {"id": "p1", "pokemon": pokemon}, "rqid": 6})
+    assert {m["species"] for m in game["roster"]["p1"]} == set(p1_team)  # all 6 merged in
+    switchable = {a["mon"]["species"] for a in player_actions(game, "p1")
+                  if a["kind"] == "switch"}
+    assert set(hidden) & switchable  # a hidden reserve is now a switch option
+
+
+def _first_index_after_turn(log: str, turn: int) -> int:
+    lines = log.splitlines()
+    for i, ln in enumerate(lines):
+        if ln.startswith(f"|turn|{turn}"):
+            return i + 1
+    return len(lines)
+
+
 def _log_until_turn(log: str, turn: int) -> str:
     out = []
     for ln in log.splitlines():
