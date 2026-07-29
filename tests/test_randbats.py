@@ -123,3 +123,12 @@ def test_live_assistant_produces_a_legal_choice_on_a_real_randbats_game():
     assert res["ok"] and CHOOSE.match(res["choose"])
     assert CHOOSE.match(res["choose_mixed"])
     assert res["winprob"] is None or 0.0 <= res["winprob"] <= 1.0
+    # the bridge must be able to serialize the whole payload to strictly-legal JSON
+    # (a stray numpy value or NaN used to crash the reply -> browser "no response")
+    from src.assistant_server import _safe
+    import numpy as np
+    txt = json.dumps(_safe(res), allow_nan=False)  # allow_nan=False => raises on NaN/inf
+    assert json.loads(txt)["choose"] == res["choose"]
+    assert json.loads(json.dumps(_safe({"a": np.float64(0.5), "b": np.array([1, 2]),
+                                        "c": float("nan"), "d": np.int64(3)}),
+                                 allow_nan=False)) == {"a": 0.5, "b": [1, 2], "c": None, "d": 3}
