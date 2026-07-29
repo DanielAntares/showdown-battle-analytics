@@ -76,7 +76,9 @@ function onRequest(room, st) {
     { type: "advise", log: st.lines.join("\n"), request: JSON.stringify(req), mode: settings.mode },
     (res) => {
       if (chrome.runtime.lastError || !res || !res.ok) {
-        setStatus("bridge offline — start run_assistant.bat");
+        const why = (chrome.runtime.lastError && chrome.runtime.lastError.message)
+          || (res && res.error) || "no response";
+        setStatus("bridge offline (" + why + ") — start run_assistant.bat");
         return;
       }
       renderAdvice(room, res);
