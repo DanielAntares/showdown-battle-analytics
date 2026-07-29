@@ -56,7 +56,12 @@
     "fainted_diff",
     "healthy_diff",
     "hp_momentum_1",
-    "hp_momentum_3"
+    "hp_momentum_3",
+    "spe_frac",
+    "p1_moves_first",
+    "p1_dmg_proxy",
+    "p2_dmg_proxy",
+    "dmg_proxy_diff"
   ],
   "categories": {
     "p1_active_species": [
@@ -1219,11 +1224,11 @@
       "psychicterrain"
     ]
   },
-  "best_iteration": 310,
+  "best_iteration": 374,
   "calibration": null,
   "test_metrics": {
-    "log_loss": 0.6056131477981481,
-    "brier": 0.21037769711632764,
-    "auc": 0.724317149537693
+    "log_loss": 0.6032911746450407,
+    "brier": 0.20942641615787283,
+    "auc": 0.7273453364257277
   }
 }

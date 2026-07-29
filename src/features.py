@@ -11,9 +11,92 @@ used to augment training data — every position is also seen from the other
 player's seat, which doubles the sample and enforces symmetry.
 """
 
+import numpy as np
 import pandas as pd
 
 from src.common import load_config
+
+# active-vs-active interaction features that earned their place on the randbats
+# validation fold (-0.003 log loss). The raw type-advantage and stat/level diffs
+# were tried too but scored ~0 gain (ranks #54-69 of 69) — the species categoricals
+# subsume them, and the type signal already lives inside the damage proxy — so only
+# the derived speed + damage-pressure features are kept.
+MATCHUP_FEATURES = [
+    "spe_frac", "p1_moves_first", "p1_dmg_proxy", "p2_dmg_proxy", "dmg_proxy_diff",
+]
+
+
+def _boost_mult(stage) -> np.ndarray:
+    stage = np.asarray(stage, dtype=float)
+    # clamp the unused branch's denominator so np.where doesn't warn at stage=+2
+    return np.where(stage >= 0, (2.0 + stage) / 2.0, 2.0 / (2.0 - np.minimum(stage, 0)))
+
+
+def add_matchup_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Active-vs-active interaction features the two species categoricals can't
+    express on their own: who outspeeds, the offensive type matchup both ways, a
+    cheap boost-aware damage/KO proxy, and level/stat gaps. Computed from the raw
+    p1_/p2_ columns (so mirror augmentation handles orientation for free), from
+    info visible on the field (no leakage), and level-scaled via real_stats — so in
+    random battles the actual per-species level feeds the speed/damage estimates."""
+    from src.movesets import real_stats, species_level
+    from src.pokedex import lookup, type_advantage
+
+    sp1 = df["p1_active_species"].astype(str)
+    sp2 = df["p2_active_species"].astype(str)
+    uniq = sorted(set(sp1.unique()) | set(sp2.unique()))
+    code = {s: i for i, s in enumerate(uniq)}
+    n = len(uniq)
+    atk = np.empty(n); dfn = np.empty(n); spa = np.empty(n); spd = np.empty(n)
+    spe = np.empty(n); hp = np.empty(n); lvl = np.empty(n); tps = []
+    for s, i in code.items():
+        rs = real_stats(s)
+        atk[i], dfn[i], spa[i] = rs["atk"], rs["def"], rs["spa"]
+        spd[i], spe[i], hp[i] = rs["spd"], rs["spe"], rs["hp"]
+        lvl[i] = species_level(s)
+        dex = lookup(s)
+        tps.append(dex["types"] if dex else [])
+    # best-STAB effectiveness matrix: TADV[i, j] = species i attacking species j
+    tadv = np.ones((n, n))
+    for i in range(n):
+        if not tps[i]:
+            continue
+        for j in range(n):
+            if tps[j]:
+                tadv[i, j] = type_advantage(tps[i], tps[j])
+    c1 = sp1.map(code).to_numpy()
+    c2 = sp2.map(code).to_numpy()
+
+    # some paths (lead/pivot evaluation) feed minimal snapshots that omit boost/
+    # status/field columns — default them (no boost / no status / no field effect)
+    def get(col, default=0):
+        return df[col] if col in df else pd.Series(default, index=df.index)
+
+    def screen(side):  # tailwind doubles speed
+        return (get(f"{side}_screen_tailwind") > 0).to_numpy()
+
+    par1 = (get("p1_active_status", "").astype(str) == "par").to_numpy()
+    par2 = (get("p2_active_status", "").astype(str) == "par").to_numpy()
+    spe1 = spe[c1] * _boost_mult(get("p1_boost_spe")) * np.where(par1, 0.5, 1) * np.where(screen("p1"), 2, 1)
+    spe2 = spe[c2] * _boost_mult(get("p2_boost_spe")) * np.where(par2, 0.5, 1) * np.where(screen("p2"), 2, 1)
+    denom = spe1 + spe2
+    denom[denom == 0] = 1.0
+    df["spe_frac"] = spe1 / denom
+    tr = (get("trickroom") > 0).to_numpy()
+    df["p1_moves_first"] = np.where(tr, spe1 < spe2, spe1 > spe2).astype(float)
+
+    # damage pressure: best-STAB effectiveness x better boosted attacking route vs
+    # the matching boosted defense (type advantage folds in here, which is why the
+    # bare type_adv columns added nothing on their own)
+    t1, t2 = tadv[c1, c2], tadv[c2, c1]
+    a1 = atk[c1] * _boost_mult(get("p1_boost_atk")); s1 = spa[c1] * _boost_mult(get("p1_boost_spa"))
+    a2 = atk[c2] * _boost_mult(get("p2_boost_atk")); s2 = spa[c2] * _boost_mult(get("p2_boost_spa"))
+    d1p = dfn[c1] * _boost_mult(get("p1_boost_def")); d1s = spd[c1] * _boost_mult(get("p1_boost_spd"))
+    d2p = dfn[c2] * _boost_mult(get("p2_boost_def")); d2s = spd[c2] * _boost_mult(get("p2_boost_spd"))
+    p1_dmg = t1 * np.maximum(a1 / d2p, s1 / d2s)
+    p2_dmg = t2 * np.maximum(a2 / d1p, s2 / d1s)
+    df["p1_dmg_proxy"], df["p2_dmg_proxy"], df["dmg_proxy_diff"] = p1_dmg, p2_dmg, p1_dmg - p2_dmg
+    return df
 
 CATEGORICAL = [
     "p1_active_species",
@@ -75,11 +158,12 @@ def add_derived(df: pd.DataFrame, per_game: bool = True) -> pd.DataFrame:
     grouped = df.groupby("replay_id")["hp_diff"] if per_game else hp
     df["hp_momentum_1"] = (hp - grouped.shift(1)).fillna(0)
     df["hp_momentum_3"] = (hp - grouped.shift(3)).fillna(0)
-    # Explicit Pokédex features (base stats of the actives, STAB type advantage
-    # via src/pokedex.py) were tested and rejected on validation: 0.5906 -> 0.5927
-    # log loss overall, worse even on rare-species turns (0.6343 -> 0.6415) — the
-    # species categoricals already subsume stats/typing for anything seen in
-    # training. Don't re-add without beating that bar; src/pokedex.py stays for Phase 5.
+    # Static Pokédex features (bare base stats + own typing) were rejected for OU
+    # (0.5906 -> 0.5927): the species categoricals subsumed them. add_matchup_features
+    # instead adds *interaction* features (matchup/speed/damage between the two
+    # actives) that a pair of independent categoricals cannot express, re-tested for
+    # random battles where the 562-species vocab is far sparser and levels vary.
+    df = add_matchup_features(df)
     return df
 
 
