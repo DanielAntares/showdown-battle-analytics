@@ -193,7 +193,7 @@ def advise_for_request(log: str, request, booster, meta, mode: str = "deep") -> 
         return out
 
     import numpy as np
-    from src.selfplay import mixed_pick, pooled_advise
+    from src.selfplay import pooled_advise
     rng = np.random.default_rng(req.get("rqid") or 0)
     pess = pessimism_for_elo(game.get(f"{opp}_rating"))
     worlds = int(req.get("_worlds") or 1)  # opponent determinization (opt-in)
@@ -206,13 +206,10 @@ def advise_for_request(log: str, request, booster, meta, mode: str = "deep") -> 
         table = advise_search(game, side, booster, meta, snapshot_features,
                               pessimism=pess)
     rows = table.to_dict("records")
+    # auto-play sends the outright best legal action, so the panel (which shows the
+    # top row + choose) always matches what actually gets played.
     out["choose"], out["picked"] = map_choice(rows, req)
     out["table"] = rows[:5]
-    # auto-play mixes among near-tied top moves so the bot isn't exploitably
-    # deterministic; manual mode still shows/plays the outright best (choose).
-    lbl = mixed_pick(table, rng, 0.04)
-    prioritized = ([r for r in rows if r["action"] == lbl] + rows) if lbl else rows
-    out["choose_mixed"] = map_choice(prioritized, req)[0] if rows else out["choose"]
 
     try:  # what the opponent is likely to do (behaviour model; optional)
         from src.opponent import predict_actions

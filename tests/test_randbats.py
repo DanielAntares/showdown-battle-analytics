@@ -151,7 +151,6 @@ def test_live_assistant_produces_a_legal_choice_on_a_real_randbats_game():
                                  for n in names]}]}
     res = advise_for_request(log, req, booster, meta, mode="fast")
     assert res["ok"] and CHOOSE.match(res["choose"])
-    assert CHOOSE.match(res["choose_mixed"])
     assert res["winprob"] is None or 0.0 <= res["winprob"] <= 1.0
     # the bridge must be able to serialize the whole payload to strictly-legal JSON
     # (a stray numpy value or NaN used to crash the reply -> browser "no response")
