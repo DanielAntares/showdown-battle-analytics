@@ -76,6 +76,25 @@ FLINCH_MOVES = {
     "steamroller", "needlearm", "icefang", "firefang", "thunderfang", "boneclub",
     "darkpulse", "zingzap", "fierywrath", "floatyfall",
 }
+# damaging moves the move data stores as power 0 because it's computed at run time
+WEIGHT_MOVES = {"grassknot", "lowkick", "heavyslam", "heatcrash"}   # by weight
+FRAC_HP_MOVES = {"superfang": 0.5, "ruination": 0.5,               # % of current HP
+                 "naturesmadness": 0.5, "guardianofalola": 0.75}
+VARIABLE_POWER = WEIGHT_MOVES | set(FRAC_HP_MOVES) | {"endeavor"}
+
+
+def weight_of(species: str, ability: str = "", item: str = "") -> float:
+    """Effective weight in kg: the dex weight, doubled by Heavy Metal, halved by
+    Light Metal, halved again by a held Float Stone. Minimum 0.1 kg (game floor)."""
+    dex = lookup(species)
+    w = float((dex or {}).get("weightkg") or 50.0)
+    if ability == "heavymetal":
+        w *= 2.0
+    elif ability == "lightmetal":
+        w *= 0.5
+    if item == "floatstone":
+        w *= 0.5
+    return max(0.1, w)
 
 
 def predicted_item(mon: dict) -> str:
@@ -421,6 +440,11 @@ class SimState:
         if move.get("fixed"):  # Seismic Toss / Night Shade: damage = attacker level
             dmg = atk.level if move["fixed"] == "level" else float(move["fixed"])
             return dmg / dfn.stats["hp"] * move.get("accuracy", 1.0)
+        move_id = norm_name(move.get("name", ""))
+        if move_id in FRAC_HP_MOVES:  # Super Fang / Ruination: a fraction of current HP
+            return FRAC_HP_MOVES[move_id] * dfn.hp * move.get("accuracy", 1.0)
+        if move_id == "endeavor":  # brings the target down to the user's HP
+            return max(0.0, dfn.hp - atk.hp) * move.get("accuracy", 1.0)
 
         physical = move["category"] == "Physical"
         weather = self.snap.get("weather", "")
@@ -467,7 +491,8 @@ class SimState:
             d_stat *= 1.5  # snow boosts Ice-types' Def
 
         lvl_term = 2 * atk.level / 5 + 2  # 42 at L100; randbats mons hit at their level
-        dmg = (lvl_term * move["power"] * a_stat / d_stat) / 50 + 2
+        power = self._effective_power(side, move)  # weight-variable moves resolve here
+        dmg = (lvl_term * power * a_stat / d_stat) / 50 + 2
         frac = dmg / dfn.stats["hp"] * 0.925  # avg roll
         frac *= move.get("multihit", 1)
         frac *= 1.5 if move["type"] in atk.stab_types else 1.0
@@ -513,6 +538,27 @@ class SimState:
         if stage:
             acc = min(1.0, acc * ((3 + stage) / 3 if stage >= 0 else 3 / (3 - stage)))
         return frac * acc
+
+    def _effective_power(self, side: str, move: dict) -> float:
+        """Base power for the damage formula — computing the weight-variable moves
+        (Low Kick / Grass Knot scale with the target's weight; Heavy Slam / Heat
+        Crash with how much heavier the user is) instead of the 0 the data stores."""
+        n = norm_name(move.get("name", ""))
+        if n not in WEIGHT_MOVES:
+            return move["power"]
+        dfn = self.active[self._opp(side)]
+        tw = weight_of(dfn.species, dfn.ability, dfn.item)
+        if n in ("grassknot", "lowkick"):
+            for thr, p in ((10, 20), (25, 40), (50, 60), (100, 80), (200, 100)):
+                if tw < thr:
+                    return p
+            return 120
+        atk = self.active[side]  # heavier-than-target ratio
+        ratio = weight_of(atk.species, atk.ability, atk.item) / tw
+        for thr, p in ((5, 120), (4, 100), (3, 80), (2, 60)):
+            if ratio >= thr:
+                return p
+        return 40
 
     def ko_chance(self, side: str, move: dict) -> float:
         """Probability `side`'s move KOs the opposing active this turn, from the
@@ -583,7 +629,8 @@ class SimState:
                 me.sub_hp = 0.25
                 me.volatiles.add("substitute")
             return
-        if move["category"] != "Status" and (move["power"] > 0 or move.get("fixed")):
+        if move["category"] != "Status" and (move["power"] > 0 or move.get("fixed")
+                                              or norm_name(move["name"]) in VARIABLE_POWER):
             frac = self.damage_fraction(side, move) * dmg_scale  # dmg_scale<1: EV flinch
             if opp.sub_hp > 0 and frac > 0:
                 # the substitute soaks the hit; drain/recoil/contact still key off
@@ -960,9 +1007,9 @@ def moves_for(mon: dict, snap: dict | None = None, side: str | None = None,
                 or (sc in SCREENS and snap[f"{side}_screen_{sc}"])
 
         def whiffs(m):  # zero-damage attack (any immunity source) — may leave only switches
-            if m["category"] == "Status" or not m.get("power", 0):
-                return False
             n = norm_name(m["name"])
+            if m["category"] == "Status" or (not m.get("power", 0) and n not in VARIABLE_POWER):
+                return False
             if opp_underground and n not in ("earthquake", "magnitude"):
                 return True
             if opp_types and effectiveness(m["type"], opp_types) == 0:

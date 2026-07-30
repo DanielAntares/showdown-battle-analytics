@@ -100,8 +100,11 @@ def move_info(move_name: str) -> dict | None:
     return load_moves().get(norm_name(move_name))
 
 
-def build_asset() -> None:
-    raw = requests.get(POKEDEX_URL, timeout=60).json()
+def build_asset(src: str | None = None) -> None:
+    if src and not str(src).startswith("http"):
+        raw = json.loads(open(src, encoding="utf-8").read())
+    else:
+        raw = requests.get(src or POKEDEX_URL, timeout=60).json()
     dex = {}
     for key, mon in raw.items():
         stats = mon.get("baseStats")
@@ -109,6 +112,7 @@ def build_asset() -> None:
             continue
         dex[key] = {s: stats[s] for s in STATS}
         dex[key]["types"] = [t.lower() for t in mon["types"]]
+        dex[key]["weightkg"] = mon.get("weightkg", 0)  # for Low Kick / Heavy Slam / ...
     ASSET.parent.mkdir(exist_ok=True)
     ASSET.write_text(json.dumps(dex, separators=(",", ":")), encoding="utf-8")
     print(f"Wrote {len(dex)} species to {ASSET.relative_to(ROOT)} "
