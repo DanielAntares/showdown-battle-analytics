@@ -24,7 +24,7 @@ import pandas as pd
 
 from src.advisor import (MATERIAL_BONUS, SWITCH_COST, TERA_COST, SimState,
                          effectiveness, is_pure_setup, lookup, moves_for,
-                         player_actions)
+                         opp_response_probs, player_actions)
 from src.predict import calibrate, snapshot_features
 
 
@@ -212,6 +212,21 @@ def _reduce(node, scores: np.ndarray, pessimism: float) -> float:
     return best
 
 
+def _ko_credit(game: dict, snap: dict, side: str, opp: str, action: dict) -> float:
+    """MATERIAL_BONUS x the chance this move KOs the foe on a high roll when the
+    average-roll sim wouldn't — the same secure-the-KO credit the 1-ply advisor
+    applies (only for near-KOs, so a secured KO isn't double-paid)."""
+    mv = action.get("move")
+    if action["kind"] != "move" or not mv or not mv.get("power"):
+        return 0.0
+    probe = SimState(game, snap)
+    oa = probe.active[opp]
+    if oa.fainted or oa.sub_hp > 0:
+        return 0.0
+    avg = probe.damage_fraction(side, mv)
+    return MATERIAL_BONUS * probe.ko_chance(side, mv) if 0 < avg < oa.hp else 0.0
+
+
 def deep_search(game: dict, side: str, booster, meta, depth: int = 2,
                 rollout: int = 3, top_k: int = 3,
                 pessimism: float = PESSIMISM) -> pd.DataFrame:
@@ -230,19 +245,24 @@ def deep_search(game: dict, side: str, booster, meta, depth: int = 2,
 
     rows = []
     my_acts = top_actions(game, side, max(top_k, 5))
+    snap = game["snapshots"][-1]
+    opp_probs = opp_response_probs(game, opp, opp_acts)  # weight the likely reply
     for a, responses in zip(my_acts, root):
-        vals = [_reduce(c, scores, pessimism) for c in responses]
+        vals = np.array([_reduce(c, scores, pessimism) for c in responses])
+        ko = _ko_credit(game, snap, side, opp, a)  # secure-the-KO credit (roll spread)
+        if ko:
+            vals = np.minimum(1.0, vals + ko)
         # tempo cost, as in the 1-ply advisor: a switch forfeits the turn, so it
         # must clearly out-score staying to be worth it. Without this, a winning
         # position (where the model rates almost everything ~99%) lets switches
         # win on noise and the advice ping-pongs between walls turn after turn.
         if a["kind"] == "switch":
-            vals = [max(0.0, v - SWITCH_COST) for v in vals]
+            vals = np.maximum(0.0, vals - SWITCH_COST)
         if a.get("tera"):  # save the once-per-battle Tera unless it clearly helps
-            vals = [max(0.0, v - TERA_COST) for v in vals]
-        rows.append({"action": a["label"], "worst_case": float(min(vals)),
-                     "average": float(sum(vals) / len(vals)),
-                     "worst_response": opp_acts[int(np.argmin(vals))]["label"]})
+            vals = np.maximum(0.0, vals - TERA_COST)
+        rows.append({"action": a["label"], "worst_case": float(vals.min()),
+                     "average": float(vals @ opp_probs),
+                     "worst_response": opp_acts[int(vals.argmin())]["label"]})
     df = pd.DataFrame(rows)
     if not len(df):
         return df

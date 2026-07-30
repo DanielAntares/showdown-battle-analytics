@@ -108,6 +108,10 @@ def _apply_request(game: dict, request: dict) -> None:
     act_req = (request.get("active") or [None])[0]
     if active and act_req and act_req.get("moves"):
         active["moves"] = [m.get("move") or m.get("id") for m in act_req["moves"]]
+    # our real Tera type, if the request offers it (canTerastallize is the type
+    # string in gen9) — so the advisor Teras to the type we'll actually get
+    if active and isinstance((act_req or {}).get("canTerastallize"), str):
+        active["tera_avail"] = act_req["canTerastallize"].lower()
 
 
 def map_choice(rows: list, request: dict) -> tuple[str, str | None]:

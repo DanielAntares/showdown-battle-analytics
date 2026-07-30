@@ -67,6 +67,15 @@ MATERIAL_BONUS = 0.03
 TERA_COST = 0.04
 # phazing moves that ONLY force a switch (no damage) — useless with no switch-in
 PHAZE_STATUS = {"whirlwind", "roar"}
+# moves whose secondary (sec_chance) is a flinch — the target loses its turn if the
+# user moved first. The data doesn't label flinch, so we keep the common set.
+FLINCH_MOVES = {
+    "ironhead", "rockslide", "airslash", "darkpulse", "zenheadbutt", "waterfall",
+    "iciclecrash", "bite", "astonish", "headbutt", "extrasensory", "heartstamp",
+    "dragonrush", "skyattack", "twister", "snore", "stomp", "hyperfang",
+    "steamroller", "needlearm", "icefang", "firefang", "thunderfang", "boneclub",
+    "darkpulse", "zingzap", "fierywrath", "floatyfall",
+}
 
 
 def predicted_item(mon: dict) -> str:
@@ -505,6 +514,24 @@ class SimState:
             acc = min(1.0, acc * ((3 + stage) / 3 if stage >= 0 else 3 / (3 - stage)))
         return frac * acc
 
+    def ko_chance(self, side: str, move: dict) -> float:
+        """Probability `side`'s move KOs the opposing active this turn, from the
+        damage-roll spread (a real roll spans ~85-100% of max; our average-roll
+        fraction sits at 92.5%) times the move's accuracy. Lets the advisor prefer
+        a move that *secures* the KO over one that does more average chip."""
+        opp = self.active[self._opp(side)]
+        if opp.fainted or opp.hp <= 0 or opp.sub_hp > 0:
+            return 0.0
+        acc = move.get("accuracy", 1.0) or 1.0
+        exp = self.damage_fraction(side, move)  # accuracy + 0.925 avg roll folded in
+        avg = exp / acc if acc else 0.0         # expected fraction at the avg roll, on hit
+        if avg <= 0:
+            return 0.0
+        if move.get("fixed") or move.get("multihit", 1) > 1:
+            return float(acc) if exp >= opp.hp else 0.0  # no single-roll model for these
+        thr = opp.hp * 0.925 / avg               # min roll (of 0.85-1.0) that still KOs
+        return float(acc * np.clip((1.0 - thr) / 0.15, 0.0, 1.0))
+
     def _sleep_talk_proxy(self, side: str) -> dict | None:
         """Sleep Talk calls another move; approximate with the best STAB attack."""
         a, opp = self.active[side], self.active[self._opp(side)]
@@ -515,7 +542,7 @@ class SimState:
         return {"name": "(Sleep Talk)", "type": best, "category": cat,
                 "power": 80, "accuracy": 1.0, "priority": 0}
 
-    def use_move(self, side: str, move: dict) -> None:
+    def use_move(self, side: str, move: dict, dmg_scale: float = 1.0) -> None:
         me, opp_side = self.active[side], self._opp(side)
         opp = self.active[opp_side]
         if me.fainted:
@@ -557,7 +584,7 @@ class SimState:
                 me.volatiles.add("substitute")
             return
         if move["category"] != "Status" and (move["power"] > 0 or move.get("fixed")):
-            frac = self.damage_fraction(side, move)
+            frac = self.damage_fraction(side, move) * dmg_scale  # dmg_scale<1: EV flinch
             if opp.sub_hp > 0 and frac > 0:
                 # the substitute soaks the hit; drain/recoil/contact still key off
                 # the absorbed amount, but the mon behind it is untouched
@@ -678,6 +705,14 @@ class SimState:
                 and (first := self._observed_first()) is not None
                 and movers[0][0] != first):
             movers.reverse()
+        # flinch: if the first mover uses a flinch move and hits, the second mover
+        # loses its turn with probability = the move's secondary chance. Modeled in
+        # expectation by scaling the second mover's damage this turn.
+        dmg_scale = {s: 1.0 for s in self.active}
+        if len(movers) == 2 and attacking.get(movers[0][0]):
+            fm = movers[0][1]
+            if norm_name(fm.get("name", "")) in FLINCH_MOVES and fm.get("sec_chance", 0):
+                dmg_scale[movers[1][0]] = 1.0 - fm["sec_chance"] / 100.0
         for side, move in movers:
             if (norm_name(move.get("name", "")) in FAILS_VS_NONATTACK
                     and not attacking.get(self._opp(side))):
@@ -686,7 +721,7 @@ class SimState:
                     and move.get("priority", 0) > 0
                     and _grounded(self.active[self._opp(side)])):
                 continue  # Psychic Terrain blocks priority against grounded targets
-            self.use_move(side, move)
+            self.use_move(side, move, dmg_scale=dmg_scale[side])
         self.upkeep()
 
     def upkeep(self) -> None:
@@ -746,9 +781,9 @@ class SimState:
 
     def _replacement(self, side: str, fainted_species: str) -> dict | None:
         """The mon forced in after a faint. We can't know the real choice, so we
-        assume the sensible one: the living benched Pokémon that best resists the
-        opposing active's STAB (their best defensive answer), health breaking ties.
-        Deterministic and realistic — far better than an arbitrary 'healthiest'."""
+        assume the sensible one: the living benched Pokémon that best answers the
+        opposing active — resisting its STAB *and* threatening it back — with health
+        breaking ties. Deterministic and realistic (far better than 'healthiest')."""
         bench = [m for m in self.rosters.get(side, [])
                  if not m["fainted"] and m["hp"] > 0 and m["species"] != fainted_species]
         if not bench:
@@ -756,12 +791,18 @@ class SimState:
         atk = self.active[self._opp(side)]
         atk_types = atk.stab_types or set(atk.types)
 
-        def vulnerability(m):
+        def vulnerability(m):  # worst the foe's STAB does to this candidate (lower is safer)
             dex = lookup(m["species"])
             types = dex["types"] if dex else []
             return max((effectiveness(t, types) for t in atk_types), default=1.0)
 
-        return min(bench, key=lambda m: (vulnerability(m), -m["hp"]))
+        def threat(m):  # best the candidate's STAB does back into the foe (higher is better)
+            dex = lookup(m["species"])
+            types = dex["types"] if dex else []
+            return max((effectiveness(t, atk.types) for t in types), default=1.0)
+
+        # least vulnerable first, then most threatening back, then healthiest
+        return min(bench, key=lambda m: (vulnerability(m), -threat(m), -m["hp"]))
 
     def to_snapshot(self) -> dict:
         out = dict(self.snap)
@@ -947,8 +988,10 @@ def player_actions(game: dict, side: str) -> list[dict]:
             moves = moves_for(me)  # trapped and every move whiffs: must click something
         for move in moves:
             acts.append({"kind": "move", "label": move["name"], "move": move})
-        # Terastallizing is a once-per-battle action taken alongside a move
-        tera = predicted_tera(me)
+        # Terastallizing is a once-per-battle action taken alongside a move. In a
+        # live battle our own Tera type is known (request's canTerastallize); the
+        # foe's is the randbats-data prediction. tera_avail carries the known one.
+        tera = me.get("tera_avail") or predicted_tera(me)
         if tera and snap is not None and not snap.get(f"{side}_tera_used"):
             for move in moves:
                 if move["category"] != "Status":
@@ -978,6 +1021,35 @@ def _rank_by_pessimism(df: pd.DataFrame, pessimism: float) -> pd.DataFrame:
     rank = pessimism * df.worst_case + (1 - pessimism) * df.average
     return df.assign(_rank=rank).sort_values("_rank", ascending=False,
                                              ignore_index=True).drop(columns="_rank")
+
+
+def opp_response_probs(game: dict, opp_side: str, opp_actions: list) -> np.ndarray:
+    """Probability the opponent picks each action in `opp_actions`, from the trained
+    opponent-move model — so the search can weight the opponent's LIKELY reply
+    instead of a uniform average. The pessimism knob still guards the worst case, so
+    this only shifts the expected-value half of the blend. Uniform fallback if the
+    model is missing or nothing matches."""
+    n = len(opp_actions)
+    if n <= 1:
+        return np.ones(n)
+    try:
+        from src.opponent import predict_actions
+        preds = predict_actions(game, opp_side, top=12)
+    except Exception:
+        preds = []
+    pm: dict = {}
+    for p in preds:
+        key = (p["kind"], norm_name(p["name"]))
+        pm[key] = pm.get(key, 0.0) + float(p.get("prob", 0.0))
+    probs = np.zeros(n)
+    for i, a in enumerate(opp_actions):
+        key = (("switch", norm_name(a["mon"]["species"])) if a["kind"] == "switch"
+               else ("move", norm_name(a.get("move", {}).get("name", a.get("label", "")))))
+        probs[i] = pm.get(key, 0.0)
+    if probs.sum() <= 0:
+        return np.ones(n) / n
+    probs = probs + 0.02  # floor so a legal reply the model didn't rank isn't ignored
+    return probs / probs.sum()
 
 
 def advise_search(game: dict, side: str, booster, meta, snapshot_features,
@@ -1018,14 +1090,32 @@ def advise_search(game: dict, side: str, booster, meta, snapshot_features,
     my_switch = np.array([switch_cost if a["kind"] == "switch" else 0.0 for a in mine])
     opp_switch = np.array([switch_cost if b["kind"] == "switch" else 0.0 for b in theirs])
     my_tera = np.array([tera_cost if a.get("tera") else 0.0 for a in mine])  # save Tera
+    # KO-probability credit: a move that KOs only on a high roll is under-valued by
+    # the single average-roll sim (the target survives, so no material). Credit it by
+    # its KO chance — but only when the average roll does NOT already faint, so a
+    # secured KO (already counted via material) isn't double-paid.
+    ko_credit = np.zeros(len(mine))
+    for i, a in enumerate(mine):
+        mv = a.get("move")
+        if a["kind"] == "move" and mv and mv.get("power"):
+            probe = SimState(game, snap)
+            oa = probe.active[opp]
+            if not oa.fainted and oa.sub_hp <= 0:
+                avg = probe.damage_fraction(side, mv)
+                if 0 < avg < oa.hp:
+                    ko_credit[i] = material * probe.ko_chance(side, mv)
     grid = np.clip(mine_win.reshape(len(mine), len(theirs))
-                   - my_switch[:, None] - my_tera[:, None] + opp_switch[None, :], 0.0, 1.0)
+                   - my_switch[:, None] - my_tera[:, None] + opp_switch[None, :]
+                   + ko_credit[:, None], 0.0, 1.0)
 
+    # expected value over the opponent's LIKELY reply (trained model), not a flat
+    # mean — so the blend leans on what this opponent actually tends to do
+    opp_probs = opp_response_probs(game, opp, theirs)
     rows = []
     for i, a in enumerate(mine):
         worst_j = int(grid[i].argmin())
         rows.append({"action": a["label"], "worst_case": float(grid[i, worst_j]),
-                     "average": float(grid[i].mean()),
+                     "average": float(grid[i] @ opp_probs),
                      "worst_response": theirs[worst_j]["label"]})
     return _rank_by_pessimism(pd.DataFrame(rows), pessimism)
 
