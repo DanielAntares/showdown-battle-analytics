@@ -83,11 +83,11 @@ function onRequest(room, st) {
       }
       renderAdvice(room, res);
       if (settings.auto && res.choose && req.rqid !== undefined) {
-        // human-ish pause: usually 1-7 s, with an occasional (5%) long think of
-        // 10-15 s — real players sometimes stop and stare at a position
+        // human-ish pause: usually 3-9 s, with an occasional (5%) long think of
+        // 9-13 s — real players sometimes stop and stare at a position
         const delay = Math.random() < 0.05
-          ? 10000 + Math.random() * 5000
-          : 1000 + Math.random() * 6000;
+          ? 9000 + Math.random() * 4000
+          : 3000 + Math.random() * 6000;
         const cmd = res.choose; // the outright best legal action — matches the panel
         setTimeout(() => {
           if (rooms[room] && rooms[room].request === req) { // still the live decision
