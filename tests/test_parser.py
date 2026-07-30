@@ -156,6 +156,26 @@ def test_disable_tracks_and_clears_the_named_move():
     assert all(m["disabled"] == "" for m in roster_of(p)["p1"])
 
 
+def test_rampage_move_locks_the_user_and_clears_on_fatigue():
+    """Outrage / Thrash / Petal Dance lock the user into the move for 2-3 turns, so
+    the advisor must not offer a switch until it ends (the 'suggested a switch but
+    played Outrage' report)."""
+    from src.parser import BattleParser, roster_of
+    base = ("|player|p1|a|1|1000\n|player|p2|b|1|1000\n"
+            "|poke|p1|Dragonite, M|\n|poke|p2|Blissey, F|\n|start\n"
+            "|switch|p1a: Dragonite|Dragonite, M|100/100\n"
+            "|switch|p2a: Blissey|Blissey, F|100/100\n|turn|1\n"
+            "|move|p1a: Dragonite|Outrage|p2a: Blissey\n|turn|2\n")
+    p = BattleParser()
+    for ln in base.splitlines():
+        p.feed(ln)
+    assert next(m for m in roster_of(p)["p1"] if m["active"])["locked_move"] == "Outrage"
+    # the rampage ends in self-confusion (fatigue) — the lock is over
+    for ln in "|-start|p1a: Dragonite|confusion|[fatigue]\n|turn|3".splitlines():
+        p.feed(ln)
+    assert next(m for m in roster_of(p)["p1"] if m["active"])["locked_move"] == ""
+
+
 def test_charge_move_prepare_does_not_hide_the_user():
     """Meteor Beam / Solar Beam / Sky Attack emit |-prepare| just like Dig/Fly but
     keep the user fully hittable. Flagging them semi-invulnerable (and never

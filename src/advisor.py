@@ -987,10 +987,14 @@ def moves_for(mon: dict, snap: dict | None = None, side: str | None = None,
             # (Thunder Wave/Electric vs Ground, Will-O-Wisp vs Fire, Toxic vs Steel...)
             return not status_lands(m["inflicts"], m["type"], opp_types)
 
+        opp_volatiles = opp_entry.get("volatiles") or []
+
         def soft_drop(m):  # never empties the list on its own (keeps a fallback)
             n = norm_name(m["name"])
             if (m.get("heal") or n == "rest") and mon["hp"] >= 0.99:
                 return True  # healing at full HP fails
+            if n == "encore" and "encore" in opp_volatiles:
+                return True  # the target is already Encored — re-Encoring does nothing
             if is_pure_setup(m) and (status == "tox"
                                      or (status in ("psn", "brn") and mon["hp"] < 0.5)):
                 return True  # don't set up while dying to residual damage
@@ -1028,11 +1032,15 @@ def player_actions(game: dict, side: str) -> list[dict]:
     snap = game["snapshots"][-1] if game.get("snapshots") else None
     me = next((m for m in roster if m["active"]), None)
     can_switch = any(not m["fainted"] and not m["active"] and m["hp"] > 0 for m in roster)
+    # a rampage lock (Outrage/Thrash/Petal Dance) forces the move and forbids switching
+    locked = norm_name(me.get("locked_move", "")) if (me and not me["fainted"]) else ""
     acts = []
     if me and not me["fainted"]:
         moves = moves_for(me, snap, side, game)
         if not moves and not can_switch:
             moves = moves_for(me)  # trapped and every move whiffs: must click something
+        if locked:  # only the locked move is legal this turn
+            moves = [m for m in moves if norm_name(m["name"]) == locked] or moves
         for move in moves:
             acts.append({"kind": "move", "label": move["name"], "move": move})
         # Terastallizing is a once-per-battle action taken alongside a move. In a
@@ -1044,10 +1052,11 @@ def player_actions(game: dict, side: str) -> list[dict]:
                 if move["category"] != "Status":
                     acts.append({"kind": "move", "move": move, "tera": tera,
                                  "label": f"Tera {tera.title()} + {move['name']}"})
-    for mon in roster:
-        if not mon["fainted"] and not mon["active"] and mon["hp"] > 0:
-            acts.append({"kind": "switch", "label": f"switch to {mon['species']}",
-                         "mon": mon})
+    if not locked:  # can't switch while locked into a rampage move
+        for mon in roster:
+            if not mon["fainted"] and not mon["active"] and mon["hp"] > 0:
+                acts.append({"kind": "switch", "label": f"switch to {mon['species']}",
+                             "mon": mon})
     return acts
 
 

@@ -25,6 +25,8 @@ _BP_PASSED = {"substitute", "leechseed", "curse", "focusenergy", "aquaring", "in
 # Meteor Beam / Solar Beam / Sky Attack also emit |-prepare| but stay hittable
 _SEMI_INVULN_MOVES = {"dig", "dive", "fly", "bounce", "phantomforce", "shadowforce",
                       "skydrop"}
+# rampage moves lock the user into repeating them for 2-3 turns (then confusion)
+_RAMPAGE_MOVES = {"outrage", "thrash", "petaldance"}
 HAZARD_MAX = {"stealthrock": 1, "spikes": 3, "toxicspikes": 2, "stickyweb": 1}
 SCREENS = ("reflect", "lightscreen", "auroraveil", "tailwind")
 
@@ -58,6 +60,7 @@ class Side:
     volatiles: set = field(default_factory=set)  # encore/taunt/... on the active
     acc_boosts: dict = field(default_factory=lambda: {"accuracy": 0, "evasion": 0})
     disabled: str = ""  # a move Disabled / Cursed-Body'd on the active ("" = none)
+    locked_move: str = ""  # rampage move (Outrage/Thrash/...) the active is locked into
     last_move: str = ""  # last move the active used since switching in
     screen_turns: dict = field(default_factory=dict)  # screen -> turn it was set
     tox_turns: int = 0  # toxic counter of the active (resets on switch)
@@ -177,6 +180,7 @@ class BattleParser:
             side.acc_boosts = {"accuracy": 0, "evasion": 0}
             side.volatiles = set()  # ... and volatile states / move locks
         side.disabled = ""
+        side.locked_move = ""  # a rampage lock ends when the user leaves the field
         side.last_move = ""
         side.tox_turns = 0  # the toxic counter resets on switching out
 
@@ -319,11 +323,14 @@ class BattleParser:
                 mon.revealed = True
                 mon.moves.add(p[3])
                 mon.uses[p[3]] = mon.uses.get(p[3], 0) + 1
-                self.sides[_side_of(p[2])].last_move = p[3]
+                side = self.sides[_side_of(p[2])]
+                side.last_move = p[3]
                 self._note_move_order(_side_of(p[2]), p[3])
                 self._arm_damage_obs(_side_of(p[2]), p[3])
+                # rampage lock: Outrage/Thrash/Petal Dance force a repeat next turn
+                side.locked_move = p[3] if _norm_condition(p[3]) in _RAMPAGE_MOVES else ""
                 if _norm_condition(p[3]) in ("futuresight", "doomdesire"):
-                    self.sides[_side_of(p[2])].future_pending = True
+                    side.future_pending = True
                 if "lockedmove" in line:  # emerged from Dig/Fly/... this turn
                     self.sides[_side_of(p[2])].volatiles.discard("semiinvuln")
                 self._event(_side_of(p[2]), f"{mon.species} used {p[3]}")
@@ -362,6 +369,8 @@ class BattleParser:
             side.volatiles.add(cond)
             if cond == "disable" and len(p) > 4:  # Disable/Cursed Body name one move
                 side.disabled = p[4]
+            if cond == "confusion":  # the rampage ends in self-confusion — lock is over
+                side.locked_move = ""
         elif cmd == "-end":
             cond = _norm_condition(p[3])
             self.sides[_side_of(p[2])].volatiles.discard(cond)
@@ -521,6 +530,7 @@ def roster_of(parser: BattleParser) -> dict:
                "acc_stage": side.acc_boosts["accuracy"] if key == side.active else 0,
                "eva_stage": side.acc_boosts["evasion"] if key == side.active else 0,
                "disabled": side.disabled if key == side.active else "",
+               "locked_move": side.locked_move if key == side.active else "",
                "last_move": side.last_move if key == side.active else "",
                "tox_turns": side.tox_turns if key == side.active else 0,
                "future_pending": side.future_pending if key == side.active else False}

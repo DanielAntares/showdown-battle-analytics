@@ -4,9 +4,9 @@ opponent-policy-weighted expectation, and the known randbats Tera type."""
 import numpy as np
 import pytest
 
-from src.advisor import (FLINCH_MOVES, SimState, advise_search, opp_response_probs,
-                         player_actions)
-from src.pokedex import move_info
+from src.advisor import (FLINCH_MOVES, SimState, advise_search, moves_for,
+                         opp_response_probs, player_actions)
+from src.pokedex import move_info, norm_name
 from src.predict import load_model, snapshot_features
 from src.search import deep_search
 from src.selfplay import new_game
@@ -97,6 +97,29 @@ def test_search_survives_a_double_faint_with_a_hidden_foe_bench():
     deep = deep_search(g, "p1", booster, meta, depth=2, rollout=3, top_k=3, pessimism=0.6)
     for out in (fast, deep):
         assert len(out) and out.action.str.startswith("switch to").all()
+
+
+def test_rampage_lock_restricts_to_the_move_and_forbids_switching():
+    g = new_game(["Dragonite"] + TEAM, ["Kingambit"] + TEAM)
+    me = next(m for m in g["roster"]["p1"] if m["active"])
+    me["moves"] = ["Outrage"]; me["locked_move"] = "Outrage"
+    acts = player_actions(g, "p1")
+    assert all(a["kind"] != "switch" for a in acts)                     # no switching
+    assert all(norm_name(a["move"]["name"]) == "outrage"
+               for a in acts if a["kind"] == "move")                    # only Outrage
+    me["locked_move"] = ""                                              # lock gone -> normal
+    assert any(a["kind"] == "switch" for a in player_actions(g, "p1"))
+
+
+def test_encore_is_pruned_against_an_already_encored_target():
+    g = new_game(["Grimmsnarl"] + TEAM, ["Kingambit"] + TEAM)
+    me = next(m for m in g["roster"]["p1"] if m["active"]); me["moves"] = ["Encore", "Spirit Break"]
+    opp = next(m for m in g["roster"]["p2"] if m["active"])
+    snap = g["snapshots"][-1]
+    opp["volatiles"] = ["encore"]  # re-Encoring does nothing
+    assert "Encore" not in [m["name"] for m in moves_for(me, snap, "p1", g)]
+    opp["volatiles"] = []          # ...but it's a valid option otherwise
+    assert "Encore" in [m["name"] for m in moves_for(me, snap, "p1", g)]
 
 
 def test_known_tera_type_is_used_over_the_prediction():
