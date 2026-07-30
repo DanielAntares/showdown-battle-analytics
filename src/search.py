@@ -187,6 +187,13 @@ def score_batch(games: list, side: str, booster, meta) -> np.ndarray:
     return np.clip(mine + MATERIAL_BONUS * mat, 0.0, 1.0)
 
 
+# when the opponent has no *known* action (their only revealed mon just fainted and
+# their bench is hidden), model them as doing nothing this turn rather than crashing
+# on an empty response set — this is the both-actives-fainted forced-switch case.
+_NOOP_OPP = {"kind": "move", "label": "(wait)",
+             "move": {"name": "(wait)", "category": "Status", "power": 0, "priority": 0}}
+
+
 def _build_tree(game: dict, side: str, depth: int, rollout: int, k: int, leaves: list):
     """Build the search tree, collecting rollout-terminal leaf states into `leaves`
     (pure simulation, no model calls). Returns a structure evaluate() reduces."""
@@ -194,7 +201,7 @@ def _build_tree(game: dict, side: str, depth: int, rollout: int, k: int, leaves:
         leaves.append(_rollout_terminal(game, side, rollout))
         return ("leaf", len(leaves) - 1)
     opp = _other(side)
-    opp_acts = top_actions(game, opp, k)
+    opp_acts = top_actions(game, opp, k) or [_NOOP_OPP]
     my = []
     for a in top_actions(game, side, k):
         my.append([_build_tree(step(game, {side: a, opp: b}), side, depth - 1, rollout, k, leaves)
@@ -235,7 +242,7 @@ def deep_search(game: dict, side: str, booster, meta, depth: int = 2,
     opponent's best response vs their average one at every decision node (see
     advisor.pessimism_for_elo) — lower it against weaker opponents."""
     opp = _other(side)
-    opp_acts = top_actions(game, opp, top_k)
+    opp_acts = top_actions(game, opp, top_k) or [_NOOP_OPP]  # foe may have no known reply
     leaves: list = []
     root = []  # per root action: list of (opponent response) subtrees
     for a in top_actions(game, side, max(top_k, 5)):

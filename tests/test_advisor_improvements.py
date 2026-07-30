@@ -8,6 +8,7 @@ from src.advisor import (FLINCH_MOVES, SimState, advise_search, opp_response_pro
                          player_actions)
 from src.pokedex import move_info
 from src.predict import load_model, snapshot_features
+from src.search import deep_search
 from src.selfplay import new_game
 
 TEAM = ["Great Tusk", "Gholdengo", "Kingambit", "Dragonite", "Toxapex", "Garchomp"]
@@ -77,6 +78,25 @@ def test_opp_response_probs_is_a_weighted_distribution():
     assert np.all(probs >= 0) and probs.sum() == pytest.approx(1.0)
     # the model should express *some* preference, not a flat uniform
     assert probs.std() > 0
+
+
+def test_search_survives_a_double_faint_with_a_hidden_foe_bench():
+    """Both actives fainted and the opponent's only revealed mon is the one that just
+    fainted (random battles hide their bench) -> the opponent has no *known* reply.
+    The search must still rank our replacement switches, not crash on an empty
+    response set (the 'stopped when both pokemon died' ValueError)."""
+    booster, meta = load_model()
+    g = new_game(["Pawmot"] + TEAM[1:], ["Lycanroc"] + TEAM[1:])
+    p1a = next(m for m in g["roster"]["p1"] if m["active"]); p1a["fainted"] = True; p1a["hp"] = 0.0
+    p2a = next(m for m in g["roster"]["p2"] if m["active"]); p2a["fainted"] = True; p2a["hp"] = 0.0
+    g["roster"]["p2"] = [p2a]  # bench unrevealed in randbats
+    g["snapshots"][-1]["p1_active_hp"] = 0.0
+    g["snapshots"][-1]["p2_active_hp"] = 0.0
+    assert player_actions(g, "p2") == []  # foe has no known action
+    fast = advise_search(g, "p1", booster, meta, snapshot_features, pessimism=0.6)
+    deep = deep_search(g, "p1", booster, meta, depth=2, rollout=3, top_k=3, pessimism=0.6)
+    for out in (fast, deep):
+        assert len(out) and out.action.str.startswith("switch to").all()
 
 
 def test_known_tera_type_is_used_over_the_prediction():
